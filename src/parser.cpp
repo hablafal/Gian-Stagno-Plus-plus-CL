@@ -35,16 +35,11 @@ bool Parser::expect(TokenKind k, const char* msg) {
 }
 
 SourceLoc Parser::loc() const {
-    SourceLoc l;
-    l.line = current_.line;
-    l.column = current_.column;
-    return l;
+    return current_.loc;
 }
 
 void Parser::error(const std::string& msg) {
-    std::ostringstream os;
-    os << lexer_.filename() << ":" << current_.line << ":" << current_.column << ": error: " << msg;
-    errors_.push_back(os.str());
+    errors_.push_back(SourceManager::instance().formatError(current_.loc, msg));
 }
 
 void Parser::sync() {
@@ -59,15 +54,39 @@ void Parser::sync() {
 
 std::unique_ptr<Type> Parser::parseType() {
     SourceLoc l = loc();
+    if (match(TokenKind::Star)) {
+        auto ty = std::make_unique<Type>();
+        ty->kind = Type::Kind::Pointer;
+        ty->ptrTo = parseType();
+        ty->loc = l;
+        return ty;
+    }
     auto ty = std::make_unique<Type>();
     ty->loc = l;
     if (match(TokenKind::Int)) { ty->kind = Type::Kind::Int; return ty; }
     if (match(TokenKind::Float)) { ty->kind = Type::Kind::Float; return ty; }
     if (match(TokenKind::Bool)) { ty->kind = Type::Kind::Bool; return ty; }
+    if (match(TokenKind::String)) { ty->kind = Type::Kind::String; return ty; }
+    if (match(TokenKind::Char)) { ty->kind = Type::Kind::Char; return ty; }
     if (check(TokenKind::Ident)) {
-        ty->kind = Type::Kind::StructRef;
-        ty->structName = current_.text;
+        std::string id = current_.text;
         advance();
+        if (match(TokenKind::Dot)) {
+            if (!check(TokenKind::Ident)) { error("expected type name after '.'"); }
+            ty->kind = Type::Kind::StructRef;
+            ty->ns = id;
+            ty->structName = current_.text;
+            advance();
+        } else {
+            ty->kind = Type::Kind::StructRef;
+            ty->structName = id;
+        }
+        if (match(TokenKind::Lt)) {
+            do {
+                ty->typeArgs.push_back(*parseType());
+            } while (match(TokenKind::Comma));
+            expect(TokenKind::Gt, "expected '>' after type arguments");
+        }
         return ty;
     }
     error("expected type");
@@ -110,22 +129,85 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         expect(TokenKind::RParen, "expected ')'");
         return e;
     }
+    if (match(TokenKind::New)) {
+        auto ty = parseType();
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::New;
+        if (match(TokenKind::LBracket)) {
+            e->left = parseExpr();
+            expect(TokenKind::RBracket, "expected ']' after array size");
+        }
+        e->targetType = std::move(ty);
+        e->loc = l;
+        return e;
+    }
+    if (check(TokenKind::StringLit)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::StringLit;
+        e->ident = current_.text;
+        e->loc = l;
+        advance();
+        return e;
+    }
     error("expected expression");
     return Expr::makeIntLit(0, l);
 }
 
 std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
-    SourceLoc l = loc();
-    while (match(TokenKind::Dot)) {
-        if (!check(TokenKind::Ident)) { error("expected member name"); break; }
-        std::string mem = current_.text;
-        advance();
-        auto m = std::make_unique<Expr>();
-        m->kind = Expr::Kind::Member;
-        m->left = std::move(base);
-        m->member = mem;
-        m->loc = l;
-        base = std::move(m);
+    while (true) {
+        SourceLoc l = loc();
+        if (match(TokenKind::Dot)) {
+            if (!check(TokenKind::Ident)) { error("expected member name"); break; }
+            std::string mem = current_.text;
+            advance();
+            auto m = std::make_unique<Expr>();
+            m->kind = Expr::Kind::Member;
+            m->left = std::move(base);
+            m->member = mem;
+            m->loc = l;
+            base = std::move(m);
+        } else if ((check(TokenKind::Lt) && lexer_.peekForGenericEnd()) || check(TokenKind::LParen)) {
+            std::vector<Type> typeArgs;
+            if (match(TokenKind::Lt)) {
+                do {
+                    typeArgs.push_back(*parseType());
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::Gt, "expected '>' after type arguments");
+            }
+
+            if (!match(TokenKind::LParen)) {
+                // If it was just <T> but no (args), it might be a type in an expression context?
+                // For now, let's assume it MUST be a call if it has type args in postfix.
+                error("expected '(' after type arguments");
+                break;
+            }
+
+            std::vector<std::unique_ptr<Expr>> args;
+            if (!check(TokenKind::RParen)) {
+                do {
+                    args.push_back(parseExpr());
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RParen, "expected ')' after arguments");
+
+            if (base->kind == Expr::Kind::Member && base->left->kind == Expr::Kind::Var) {
+                std::string ns = base->left->ident;
+                std::string func = base->member;
+                auto c = Expr::makeCall(func, std::move(args), l);
+                c->ns = ns;
+                c->exprType.typeArgs = typeArgs;
+                base = std::move(c);
+            } else if (base->kind == Expr::Kind::Var) {
+                std::string func = base->ident;
+                auto c = Expr::makeCall(func, std::move(args), l);
+                c->exprType.typeArgs = typeArgs;
+                base = std::move(c);
+            } else {
+                error("expression is not callable");
+            }
+        } else {
+            break;
+        }
     }
     return base;
 }
@@ -149,6 +231,22 @@ std::unique_ptr<Expr> Parser::parseUnary() {
     if (match(TokenKind::Not)) {
         auto operand = parseUnary();
         return Expr::makeUnary("not", std::move(operand), l);
+    }
+    if (match(TokenKind::Star)) {
+        auto operand = parseUnary();
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::Deref;
+        e->right = std::move(operand);
+        e->loc = l;
+        return e;
+    }
+    if (match(TokenKind::Amp)) {
+        auto operand = parseUnary();
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::AddressOf;
+        e->right = std::move(operand);
+        e->loc = l;
+        return e;
     }
     return parsePostfix(parsePrimary());
 }
@@ -280,6 +378,38 @@ std::unique_ptr<Stmt> Parser::parseStmt() {
     if (check(TokenKind::While)) return parseWhile();
     if (check(TokenKind::For)) return parseFor();
     if (check(TokenKind::Return)) return parseReturn();
+    if (match(TokenKind::Delete)) {
+        auto expr = parseExpr();
+        expect(TokenKind::Semicolon, "expected ';' after delete");
+        auto s = std::make_unique<Stmt>();
+        s->kind = Stmt::Kind::ExprStmt;
+        s->loc = l;
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::Delete;
+        e->right = std::move(expr);
+        e->loc = l;
+        s->expr = std::move(e);
+        return s;
+    }
+    if (match(TokenKind::Unsafe)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = Stmt::Kind::Unsafe;
+        s->loc = l;
+        s->body = parseBlock();
+        return s;
+    }
+    if (match(TokenKind::Asm)) {
+        auto s = std::make_unique<Stmt>();
+        s->kind = Stmt::Kind::Asm;
+        s->loc = l;
+        expect(TokenKind::LBrace, "expected '{' after asm");
+        if (check(TokenKind::StringLit)) {
+            s->asmCode = current_.text;
+            advance();
+        }
+        expect(TokenKind::RBrace, "expected '}' after asm code");
+        return s;
+    }
     // assignment or expression statement
     auto expr = parseExpr();
     if (check(TokenKind::Assign)) {
@@ -307,6 +437,14 @@ StructDecl Parser::parseStructDecl() {
     if (!check(TokenKind::Ident)) { error("expected struct/class name"); sync(); return s; }
     s.name = current_.text;
     advance();
+    if (match(TokenKind::Lt)) {
+        do {
+            if (!check(TokenKind::Ident)) { error("expected type parameter name"); }
+            s.typeParams.push_back(current_.text);
+            advance();
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "expected '>' after type parameters");
+    }
     expect(TokenKind::LBrace, "expected '{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::Eof)) {
         if (!check(TokenKind::Ident)) { error("expected member name"); sync(); break; }
@@ -324,13 +462,21 @@ StructDecl Parser::parseStructDecl() {
     return s;
 }
 
-FuncDecl Parser::parseFuncDecl() {
+FuncDecl Parser::parseFuncDecl(bool isExtern) {
     FuncDecl f;
     f.loc = loc();
     advance(); // func
     if (!check(TokenKind::Ident)) { error("expected function name"); sync(); return f; }
     f.name = current_.text;
     advance();
+    if (match(TokenKind::Lt)) {
+        do {
+            if (!check(TokenKind::Ident)) { error("expected type parameter name"); }
+            f.typeParams.push_back(current_.text);
+            advance();
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "expected '>' after type parameters");
+    }
     expect(TokenKind::LParen, "expected '('");
     if (!check(TokenKind::RParen)) {
         do {
@@ -352,7 +498,11 @@ FuncDecl Parser::parseFuncDecl() {
     } else {
         f.returnType.kind = Type::Kind::Int;
     }
-    f.body = parseBlock();
+    if (isExtern && check(TokenKind::Semicolon)) {
+        advance();
+    } else {
+        f.body = parseBlock();
+    }
     return f;
 }
 
@@ -363,11 +513,42 @@ std::unique_ptr<Program> Parser::parseProgram() {
         if (check(TokenKind::Struct) || check(TokenKind::Class)) {
             prog->structs.push_back(parseStructDecl());
         } else if (check(TokenKind::Func)) {
-            prog->functions.push_back(parseFuncDecl());
+            prog->functions.push_back(parseFuncDecl(false));
+        } else if (match(TokenKind::Extern)) {
+            std::string lib = "C";
+            if (check(TokenKind::StringLit)) {
+                lib = current_.text;
+                advance();
+            }
+            if (!check(TokenKind::Func)) {
+                error("expected 'func' or 'def' after extern");
+            } else {
+                FuncDecl f = parseFuncDecl(true);
+                f.isExtern = true;
+                f.externLib = lib;
+                prog->functions.push_back(std::move(f));
+            }
         } else if (check(TokenKind::Import)) {
-            advance();
-            if (check(TokenKind::StringLit) || check(TokenKind::Ident)) advance();
+            Import imp;
+            imp.loc = loc();
+            advance(); // import
+            if (check(TokenKind::StringLit)) {
+                imp.path = current_.text;
+                // auto-derive name from filename
+                size_t slash = imp.path.find_last_of("/\\");
+                std::string filename = (slash == std::string::npos) ? imp.path : imp.path.substr(slash + 1);
+                size_t dot = filename.find_last_of('.');
+                imp.name = (dot == std::string::npos) ? filename : filename.substr(0, dot);
+                advance();
+            } else if (check(TokenKind::Ident)) {
+                imp.name = current_.text;
+                imp.path = imp.name + ".gs";
+                advance();
+            } else {
+                error("expected string literal or identifier after 'import'");
+            }
             expect(TokenKind::Semicolon, "expected ';' after import");
+            prog->imports.push_back(std::move(imp));
         } else {
             error("expected 'struct', 'class', 'func'/'def', or 'import' at top level");
             sync();

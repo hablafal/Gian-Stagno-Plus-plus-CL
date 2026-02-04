@@ -51,13 +51,12 @@ void Lexer::skipWhitespaceAndComments() {
 Token Lexer::makeToken(TokenKind k) {
     Token t;
     t.kind = k;
-    t.line = line_;
-    t.column = col_;
+    t.loc = { filename_, line_, col_ };
     return t;
 }
 
 Token Lexer::lexNumber() {
-    int startLine = line_, startCol = col_;
+    SourceLoc loc = { filename_, line_, col_ };
     std::string num;
     bool isFloat = false;
     while (std::isdigit(static_cast<unsigned char>(cur()))) { num += cur(); advance(); }
@@ -67,8 +66,7 @@ Token Lexer::lexNumber() {
         while (std::isdigit(static_cast<unsigned char>(cur()))) { num += cur(); advance(); }
     }
     Token t;
-    t.line = startLine;
-    t.column = startCol;
+    t.loc = loc;
     if (isFloat) {
         t.kind = TokenKind::FloatLit;
         t.floatVal = std::stod(num);
@@ -80,7 +78,7 @@ Token Lexer::lexNumber() {
 }
 
 Token Lexer::lexString() {
-    int startLine = line_, startCol = col_;
+    SourceLoc loc = { filename_, line_, col_ };
     advance(); // skip opening "
     std::string s;
     while (cur() != '"' && cur() != '\0') {
@@ -96,21 +94,19 @@ Token Lexer::lexString() {
     Token t;
     t.kind = TokenKind::StringLit;
     t.text = s;
-    t.line = startLine;
-    t.column = startCol;
+    t.loc = loc;
     return t;
 }
 
 Token Lexer::lexIdentOrKeyword() {
-    int startLine = line_, startCol = col_;
+    SourceLoc loc = { filename_, line_, col_ };
     std::string id;
     if (std::isalpha(static_cast<unsigned char>(cur())) || cur() == '_') {
         id += cur(); advance();
         while (std::isalnum(static_cast<unsigned char>(cur())) || cur() == '_') { id += cur(); advance(); }
     }
     Token t;
-    t.line = startLine;
-    t.column = startCol;
+    t.loc = loc;
     t.text = id;
     if (id == "var") t.kind = TokenKind::Var;
     else if (id == "let") t.kind = TokenKind::Let;
@@ -126,6 +122,8 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "int") t.kind = TokenKind::Int;
     else if (id == "float") t.kind = TokenKind::Float;
     else if (id == "bool") t.kind = TokenKind::Bool;
+    else if (id == "string") t.kind = TokenKind::String;
+    else if (id == "char") t.kind = TokenKind::Char;
     else if (id == "true") t.kind = TokenKind::True;
     else if (id == "false") t.kind = TokenKind::False;
     else if (id == "and") t.kind = TokenKind::And;
@@ -134,13 +132,16 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "import") t.kind = TokenKind::Import;
     else if (id == "asm") t.kind = TokenKind::Asm;
     else if (id == "unsafe") t.kind = TokenKind::Unsafe;
+    else if (id == "new") t.kind = TokenKind::New;
+    else if (id == "delete") t.kind = TokenKind::Delete;
+    else if (id == "extern") t.kind = TokenKind::Extern;
     else t.kind = TokenKind::Ident;
     return t;
 }
 
 Token Lexer::lex() {
     skipWhitespaceAndComments();
-    int startLine = line_, startCol = col_;
+    SourceLoc loc = { filename_, line_, col_ };
     if (cur() == '\0') return makeToken(TokenKind::Eof);
 
     if (cur() == '"') return lexString();
@@ -150,8 +151,7 @@ Token Lexer::lex() {
     char c = cur();
     advance();
     Token t;
-    t.line = startLine;
-    t.column = startCol;
+    t.loc = loc;
     switch (c) {
         case '(': t.kind = TokenKind::LParen; break;
         case ')': t.kind = TokenKind::RParen; break;
@@ -162,6 +162,7 @@ Token Lexer::lex() {
         case ';': t.kind = TokenKind::Semicolon; break;
         case ',': t.kind = TokenKind::Comma; break;
         case ':': t.kind = TokenKind::Colon; break;
+        case '&': t.kind = TokenKind::Amp; break;
         case '.': t.kind = TokenKind::Dot; break;
         case '+': t.kind = TokenKind::Plus; break;
         case '-':
@@ -223,6 +224,23 @@ std::string Lexer::lineSnippet(int line) const {
         if (source_[i] == '\n') l++;
     }
     return "";
+}
+
+bool Lexer::peekForGenericEnd() {
+    int depth = 0;
+    for (size_t i = pos_; i < source_.size(); i++) {
+        if (source_[i] == '<') depth++;
+        else if (source_[i] == '>') {
+            if (depth == 0) {
+                size_t j = i + 1;
+                while (j < source_.size() && std::isspace(static_cast<unsigned char>(source_[j]))) j++;
+                return (j < source_.size() && source_[j] == '(');
+            }
+            depth--;
+        }
+        else if (source_[i] == ';' || source_[i] == '{' || source_[i] == '}' || source_[i] == '\n') break;
+    }
+    return false;
 }
 
 } // namespace gspp

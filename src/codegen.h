@@ -18,18 +18,22 @@ public:
 
 private:
     void emitProgram();
-    void emitFunc(const FuncDecl& f);
+    void emitFunc(const FuncSymbol& fs);
     void emitStmt(Stmt* stmt);
     void emitExpr(Expr* expr, const std::string& destReg, bool wantFloat = false);
     void emitExprToRax(Expr* expr);
     void emitExprToXmm0(Expr* expr);
     int getFrameSize();
     std::string getVarLocation(const std::string& name);
+    int getTypeSize(const Type& t);
+    StructDef* resolveStruct(const std::string& name, const std::string& ns);
+    FuncSymbol* resolveFunc(const std::string& name, const std::string& ns);
+    void emitProgramBody();
     void error(const std::string& msg, SourceLoc loc);
 
     Program* program_;
     SemanticAnalyzer* semantic_;
-    std::ostream& out_;
+    std::ostream* out_;
     const FuncDecl* currentFunc_ = nullptr;
     std::unordered_map<std::string, VarSymbol> currentVars_;
     int frameSize_ = 0;
@@ -37,6 +41,9 @@ private:
     int labelCounter_ = 0;
     std::string nextLabel();
     bool use32Bit_ = true;  // if true, emit 32-bit x86 (cdecl); else x86-64 Windows
+    bool isLinux_ = false;
+    std::string currentNamespace_;
+    std::unordered_map<std::string, std::string> stringPool_;
 };
 
 } // namespace gspp

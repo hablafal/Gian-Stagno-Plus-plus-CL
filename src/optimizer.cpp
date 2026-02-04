@@ -5,10 +5,21 @@ namespace gspp {
 void Optimizer::optimizeExpr(Expr* expr) {
     if (!expr) return;
     switch (expr->kind) {
-        case Expr::Kind::Binary:
+        case Expr::Kind::Binary: {
             optimizeExpr(expr->left.get());
             optimizeExpr(expr->right.get());
+
+            // Constant folding
+            if (expr->left->kind == Expr::Kind::IntLit && expr->right->kind == Expr::Kind::IntLit) {
+                int64_t l = expr->left->intVal;
+                int64_t r = expr->right->intVal;
+                if (expr->op == "+") { expr->kind = Expr::Kind::IntLit; expr->intVal = l + r; expr->left.reset(); expr->right.reset(); }
+                else if (expr->op == "-") { expr->kind = Expr::Kind::IntLit; expr->intVal = l - r; expr->left.reset(); expr->right.reset(); }
+                else if (expr->op == "*") { expr->kind = Expr::Kind::IntLit; expr->intVal = l * r; expr->left.reset(); expr->right.reset(); }
+                else if (expr->op == "/" && r != 0) { expr->kind = Expr::Kind::IntLit; expr->intVal = l / r; expr->left.reset(); expr->right.reset(); }
+            }
             break;
+        }
         case Expr::Kind::Unary:
             optimizeExpr(expr->right.get());
             break;
@@ -26,9 +37,39 @@ void Optimizer::optimizeExpr(Expr* expr) {
 void Optimizer::optimizeStmt(Stmt* stmt) {
     if (!stmt) return;
     switch (stmt->kind) {
-        case Stmt::Kind::Block:
-            for (auto& s : stmt->blockStmts) optimizeStmt(s.get());
+        case Stmt::Kind::Block: {
+            std::vector<std::unique_ptr<Stmt>> optimized;
+            bool returned = false;
+            for (auto& s : stmt->blockStmts) {
+                if (returned) continue; // Dead code elimination
+                optimizeStmt(s.get());
+
+                // Simplify If statements in blocks
+                if (s->kind == Stmt::Kind::If && s->condition->kind == Expr::Kind::BoolLit) {
+                    if (s->condition->boolVal) {
+                        if (s->thenBranch->kind == Stmt::Kind::Block) {
+                            for (auto& bs : s->thenBranch->blockStmts) optimized.push_back(std::move(bs));
+                        } else {
+                            optimized.push_back(std::move(s->thenBranch));
+                        }
+                    } else {
+                        if (s->elseBranch) {
+                            if (s->elseBranch->kind == Stmt::Kind::Block) {
+                                for (auto& bs : s->elseBranch->blockStmts) optimized.push_back(std::move(bs));
+                            } else {
+                                optimized.push_back(std::move(s->elseBranch));
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if (s->kind == Stmt::Kind::Return) returned = true;
+                optimized.push_back(std::move(s));
+            }
+            stmt->blockStmts = std::move(optimized);
             break;
+        }
         case Stmt::Kind::VarDecl:
             optimizeExpr(stmt->varInit.get());
             break;
@@ -36,11 +77,23 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
             optimizeExpr(stmt->assignTarget.get());
             optimizeExpr(stmt->assignValue.get());
             break;
-        case Stmt::Kind::If:
+        case Stmt::Kind::If: {
             optimizeExpr(stmt->condition.get());
-            optimizeStmt(stmt->thenBranch.get());
-            if (stmt->elseBranch) optimizeStmt(stmt->elseBranch.get());
+
+            // Dead code elimination for If
+            if (stmt->condition->kind == Expr::Kind::BoolLit) {
+                if (stmt->condition->boolVal) {
+                    optimizeStmt(stmt->thenBranch.get());
+                    // Replace If with its thenBranch? (Requires changing parent or handle here)
+                } else {
+                    if (stmt->elseBranch) optimizeStmt(stmt->elseBranch.get());
+                }
+            } else {
+                optimizeStmt(stmt->thenBranch.get());
+                if (stmt->elseBranch) optimizeStmt(stmt->elseBranch.get());
+            }
             break;
+        }
         case Stmt::Kind::While:
             optimizeExpr(stmt->condition.get());
             optimizeStmt(stmt->body.get());
@@ -56,6 +109,11 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
             break;
         case Stmt::Kind::ExprStmt:
             optimizeExpr(stmt->expr.get());
+            break;
+        case Stmt::Kind::Unsafe:
+            optimizeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::Asm:
             break;
     }
 }

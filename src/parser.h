@@ -40,7 +40,7 @@ private:
     std::unique_ptr<Stmt> parseReturn();
 
     StructDecl parseStructDecl();
-    FuncDecl parseFuncDecl();
+    FuncDecl parseFuncDecl(bool isExtern = false);
 
     void error(const std::string& msg);
     void sync();

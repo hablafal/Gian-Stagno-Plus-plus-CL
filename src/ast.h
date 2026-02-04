@@ -1,6 +1,7 @@
 #ifndef GSPP_AST_H
 #define GSPP_AST_H
 
+#include "common.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -8,27 +9,31 @@
 
 namespace gspp {
 
-struct SourceLoc {
-    int line = 0;
-    int column = 0;
-};
-
 // Forward declarations
 struct Type;
 struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam };
     Kind kind = Kind::Int;
-    std::string structName;  // for StructRef
+    std::string structName;  // for StructRef or TypeParam name
+    std::string ns;          // for StructRef
+    std::vector<Type> typeArgs; // for generics
+    std::unique_ptr<Type> ptrTo; // for Pointer
     SourceLoc loc;
+
+    Type() = default;
+    Type(Kind k) : kind(k) {}
+    Type(const Type& other);
+    Type& operator=(const Type& other);
 };
 
 struct Expr {
     enum class Kind {
-        IntLit, FloatLit, BoolLit,
-        Var, Binary, Unary, Call, Member, Cast
+        IntLit, FloatLit, BoolLit, StringLit,
+        Var, Binary, Unary, Call, Member, Cast,
+        Deref, AddressOf, New, Delete
     };
     Kind kind = Kind::IntLit;
     Type exprType;
@@ -38,6 +43,7 @@ struct Expr {
     double floatVal = 0.0;
     bool boolVal = false;
     std::string ident;
+    std::string ns; // namespace
     std::unique_ptr<Expr> left;
     std::unique_ptr<Expr> right;
     std::string op;  // binary op or unary op
@@ -58,7 +64,8 @@ struct Expr {
 
 struct Stmt {
     enum class Kind {
-        Block, VarDecl, Assign, If, While, For, Return, ExprStmt
+        Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
+        Unsafe, Asm
     };
     Kind kind = Kind::Block;
     SourceLoc loc;
@@ -77,6 +84,7 @@ struct Stmt {
     std::unique_ptr<Stmt> stepStmt;
     std::unique_ptr<Expr> returnExpr;
     std::unique_ptr<Expr> expr;
+    std::string asmCode; // for Asm
 };
 
 struct StructMember {
@@ -87,6 +95,7 @@ struct StructMember {
 
 struct StructDecl {
     std::string name;
+    std::vector<std::string> typeParams;
     std::vector<StructMember> members;
     SourceLoc loc;
 };
@@ -99,13 +108,23 @@ struct FuncParam {
 
 struct FuncDecl {
     std::string name;
+    std::vector<std::string> typeParams;
     std::vector<FuncParam> params;
     Type returnType;
     std::unique_ptr<Stmt> body;
     SourceLoc loc;
+    bool isExtern = false;
+    std::string externLib; // e.g. "C"
+};
+
+struct Import {
+    std::string name; // namespace name
+    std::string path; // file path
+    SourceLoc loc;
 };
 
 struct Program {
+    std::vector<Import> imports;
     std::vector<StructDecl> structs;
     std::vector<FuncDecl> functions;
     SourceLoc loc;

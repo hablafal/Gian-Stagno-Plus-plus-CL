@@ -2,6 +2,27 @@
 
 namespace gspp {
 
+Type::Type(const Type& other) {
+    kind = other.kind;
+    structName = other.structName;
+    ns = other.ns;
+    typeArgs = other.typeArgs;
+    loc = other.loc;
+    if (other.ptrTo) ptrTo = std::make_unique<Type>(*other.ptrTo);
+}
+
+Type& Type::operator=(const Type& other) {
+    if (this == &other) return *this;
+    kind = other.kind;
+    structName = other.structName;
+    ns = other.ns;
+    typeArgs = other.typeArgs;
+    loc = other.loc;
+    if (other.ptrTo) ptrTo = std::make_unique<Type>(*other.ptrTo);
+    else ptrTo.reset();
+    return *this;
+}
+
 std::unique_ptr<Expr> Expr::makeIntLit(int64_t v, SourceLoc loc) {
     auto e = std::make_unique<Expr>();
     e->kind = Kind::IntLit;

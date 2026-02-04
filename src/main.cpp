@@ -8,6 +8,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <string>
+#include <set>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -67,6 +68,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    gspp::SourceManager::instance().addSource(sourcePath, source);
+
     gspp::Lexer lexer(source, sourcePath);
     gspp::Parser parser(lexer);
     std::unique_ptr<gspp::Program> program = parser.parseProgram();
@@ -76,8 +79,36 @@ int main(int argc, char* argv[]) {
     }
 
     gspp::SemanticAnalyzer semantic(program.get());
+
+    std::set<std::string> loadedModules;
+    std::vector<std::unique_ptr<gspp::Program>> modulePrograms;
+
+    auto loadModuleRecursive = [&](auto self, gspp::Program* p) -> void {
+        for (const auto& imp : p->imports) {
+            if (loadedModules.count(imp.path)) continue;
+            loadedModules.insert(imp.path);
+
+            std::string modSource = readFile(imp.path);
+            if (modSource.empty()) {
+                std::cerr << "error: cannot find module '" << imp.name << "' at '" << imp.path << "'\n";
+                continue;
+            }
+            gspp::SourceManager::instance().addSource(imp.path, modSource);
+            gspp::Lexer modLexer(modSource, imp.path);
+            gspp::Parser modParser(modLexer);
+            auto modProg = modParser.parseProgram();
+
+            self(self, modProg.get());
+
+            semantic.addModule(imp.name, modProg.get());
+            modulePrograms.push_back(std::move(modProg));
+        }
+    };
+
+    loadModuleRecursive(loadModuleRecursive, program.get());
+
     if (!semantic.analyze()) {
-        for (const auto& e : semantic.errors()) std::cerr << sourcePath << e << "\n";
+        for (const auto& e : semantic.errors()) std::cerr << e << "\n";
         return 1;
     }
 
@@ -99,7 +130,7 @@ int main(int argc, char* argv[]) {
     }
     gspp::CodeGenerator codegen(program.get(), &semantic, asmFile, !use64Bit);
     if (!codegen.generate()) {
-        for (const auto& e : codegen.errors()) std::cerr << sourcePath << e << "\n";
+        for (const auto& e : codegen.errors()) std::cerr << e << "\n";
         return 1;
     }
     asmFile.close();
@@ -109,9 +140,15 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+#ifdef _WIN32
     std::string linkCmd = use64Bit
         ? "gcc -m64 -Wl,-subsystem,console -o \"" + outPath + "\" \"" + asmPath + "\" -lm"
         : "gcc -m32 -Wl,-subsystem,console -Wl,-e,_main -o \"" + outPath + "\" \"" + asmPath + "\" -lmsvcrt -lm";
+#else
+    std::string linkCmd = use64Bit
+        ? "gcc -m64 -o \"" + outPath + "\" \"" + asmPath + "\" -lm"
+        : "gcc -m32 -o \"" + outPath + "\" \"" + asmPath + "\" -lm";
+#endif
     if (debugMode) linkCmd += " -g";
     int ret = runCommand(linkCmd);
     if (ret != 0) {

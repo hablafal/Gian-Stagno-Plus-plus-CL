@@ -1,6 +1,7 @@
 #ifndef GSPP_LEXER_H
 #define GSPP_LEXER_H
 
+#include "common.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -17,12 +18,12 @@ enum class TokenKind {
     // Keywords — Python-style + C++ power
     Var, Let, Func, Def, Class, Struct, Return,
     If, Else, While, For, In,
-    Int, Float, Bool, True, False, And, Or, Not,
-    Import, Asm, Unsafe,
+    Int, Float, Bool, String, Char, True, False, And, Or, Not,
+    Import, Asm, Unsafe, New, Delete, Extern,
     // Punctuation
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semicolon, Comma, Colon, Arrow,
-    Assign,
+    Assign, Amp,
     Plus, Minus, Star, Slash, Percent,
     Eq, Ne, Lt, Gt, Le, Ge,
     Dot
@@ -31,8 +32,7 @@ enum class TokenKind {
 struct Token {
     TokenKind kind = TokenKind::Eof;
     std::string text;
-    int line = 1;
-    int column = 1;
+    SourceLoc loc;
     int64_t intVal = 0;
     double floatVal = 0.0;
 };
@@ -44,6 +44,7 @@ public:
     Token peek();
     const std::string& filename() const { return filename_; }
     std::string lineSnippet(int line) const;
+    bool peekForGenericEnd();
 
 private:
     char cur() const;

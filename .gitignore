@@ -1,0 +1,11 @@
+*.exe
+gsc
+gsc.exe
+*.o
+*.obj
+*.s
+*.out
+build/
+.idea/
+.vs/
+*.user
