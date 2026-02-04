@@ -15,8 +15,9 @@ struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List, Dict };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List, Dict, Tuple, Set };
     Kind kind = Kind::Int;
+    bool isMutable = false; // for Tuples
     std::string structName;  // for StructRef or TypeParam name
     std::string ns;          // for StructRef
     std::vector<Type> typeArgs; // for generics
@@ -31,8 +32,8 @@ struct Type {
 
 struct Expr {
     enum class Kind {
-        IntLit, FloatLit, BoolLit, StringLit, ListLit, DictLit,
-        Var, Binary, Unary, Call, Member, Cast,
+        IntLit, FloatLit, BoolLit, StringLit, ListLit, DictLit, SetLit, TupleLit,
+        Var, Binary, Unary, Call, Member, Cast, Sizeof,
         Deref, AddressOf, New, Delete, Index, Slice, Ternary,
         Comprehension
     };
@@ -124,8 +125,10 @@ struct StructDecl {
 };
 
 struct Import {
-    std::string name; // namespace name
+    std::string name; // original module name or alias if 'as' is used
     std::string path; // file path
+    std::string alias; // if 'as' is used
+    std::vector<std::string> importNames; // for 'from mod import a, b'
     SourceLoc loc;
 };
 

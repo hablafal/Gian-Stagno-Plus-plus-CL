@@ -137,6 +137,7 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "fn") t.kind = TokenKind::Fn;
     else if (id == "class") t.kind = TokenKind::Class;
     else if (id == "struct") t.kind = TokenKind::Struct;
+    else if (id == "mut") t.kind = TokenKind::Mut;
     else if (id == "data") t.kind = TokenKind::Data;
     else if (id == "if") t.kind = TokenKind::If;
     else if (id == "else") t.kind = TokenKind::Else;
@@ -144,6 +145,7 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "then") t.kind = TokenKind::Then;
     else if (id == "while") t.kind = TokenKind::While;
     else if (id == "for") t.kind = TokenKind::For;
+    else if (id == "from") t.kind = TokenKind::From;
     else if (id == "in") t.kind = TokenKind::In;
     else if (id == "repeat") t.kind = TokenKind::Repeat;
     else if (id == "loop") t.kind = TokenKind::Loop;
@@ -171,6 +173,8 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "unsafe") t.kind = TokenKind::Unsafe;
     else if (id == "new") t.kind = TokenKind::New;
     else if (id == "delete") t.kind = TokenKind::Delete;
+    else if (id == "cast") t.kind = TokenKind::Cast;
+    else if (id == "sizeof") t.kind = TokenKind::Sizeof;
     else if (id == "extern") t.kind = TokenKind::Extern;
     else if (id == "nil" || id == "Nil") t.kind = TokenKind::Nil;
     else t.kind = TokenKind::Ident;
@@ -252,6 +256,7 @@ Token Lexer::lex() {
         case ',': t.kind = TokenKind::Comma; break;
         case ':': t.kind = TokenKind::Colon; break;
         case '&': t.kind = TokenKind::Amp; break;
+        case '|': t.kind = TokenKind::Pipe; break;
         case '.':
             if (cur() == '.') {
                 advance();

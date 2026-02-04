@@ -81,11 +81,17 @@ int main(int argc, char* argv[]) {
     gspp::SemanticAnalyzer semantic(program.get());
 
     std::set<std::string> loadedModules;
+    std::unordered_map<std::string, gspp::Program*> modulesByPath;
     std::vector<std::unique_ptr<gspp::Program>> modulePrograms;
 
     auto loadModuleRecursive = [&](auto self, gspp::Program* p) -> void {
         for (const auto& imp : p->imports) {
-            if (loadedModules.count(imp.path)) continue;
+            std::string ns = imp.alias.empty() ? imp.name : imp.alias;
+            if (loadedModules.count(imp.path)) {
+                // Already loaded, but we might need to register it under a different namespace/alias
+                semantic.addModule(ns, modulesByPath[imp.path]);
+                continue;
+            }
             loadedModules.insert(imp.path);
 
             std::string modSource = readFile(imp.path);
@@ -97,11 +103,12 @@ int main(int argc, char* argv[]) {
             gspp::Lexer modLexer(modSource, imp.path);
             gspp::Parser modParser(modLexer);
             auto modProg = modParser.parseProgram();
-
-            self(self, modProg.get());
-
-            semantic.addModule(imp.name, modProg.get());
+            gspp::Program* modProgPtr = modProg.get();
+            modulesByPath[imp.path] = modProgPtr;
             modulePrograms.push_back(std::move(modProg));
+
+            self(self, modProgPtr);
+            semantic.addModule(ns, modProgPtr);
         }
     };
 
@@ -142,12 +149,12 @@ int main(int argc, char* argv[]) {
 
 #ifdef _WIN32
     std::string linkCmd = use64Bit
-        ? "gcc -m64 -Wl,-subsystem,console -o \"" + outPath + "\" \"" + asmPath + "\" -lm"
-        : "gcc -m32 -Wl,-subsystem,console -Wl,-e,_main -o \"" + outPath + "\" \"" + asmPath + "\" -lmsvcrt -lm";
+        ? "gcc -m64 -Wl,-subsystem,console -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm"
+        : "gcc -m32 -Wl,-subsystem,console -Wl,-e,_main -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lmsvcrt -lm";
 #else
     std::string linkCmd = use64Bit
-        ? "gcc -m64 -o \"" + outPath + "\" \"" + asmPath + "\" -lm"
-        : "gcc -m32 -o \"" + outPath + "\" \"" + asmPath + "\" -lm";
+        ? "g++ -m64 -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm"
+        : "g++ -m32 -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm";
 #endif
     if (debugMode) linkCmd += " -g";
     int ret = runCommand(linkCmd);

@@ -24,7 +24,7 @@ std::string CodeGenerator::nextLabel() { return ".L" + std::to_string(labelCount
 int CodeGenerator::getFrameSize() {
     int slot = 8;
     int n = 0;
-    for (const auto& p : currentVars_) n += slot;
+    n = (int)currentVars_.size() * slot;
     n = (n + 15) & ~15;
     if (n < 32) n = 32;
     return n;
@@ -37,7 +37,7 @@ std::string CodeGenerator::getVarLocation(const std::string& name) {
 }
 
 int CodeGenerator::getTypeSize(const Type& t) {
-    if (t.kind == Type::Kind::Int || t.kind == Type::Kind::Float || t.kind == Type::Kind::Pointer || t.kind == Type::Kind::String || t.kind == Type::Kind::List) return 8;
+    if (t.kind == Type::Kind::Int || t.kind == Type::Kind::Float || t.kind == Type::Kind::Pointer || t.kind == Type::Kind::String || t.kind == Type::Kind::List || t.kind == Type::Kind::Dict || t.kind == Type::Kind::Set || t.kind == Type::Kind::Tuple) return 8;
     if (t.kind == Type::Kind::Bool || t.kind == Type::Kind::Char) return 1;
     if (t.kind == Type::Kind::StructRef) { StructDef* sd = resolveStruct(t.structName, t.ns); return sd ? (int)sd->sizeBytes : 8; }
     return 0;
@@ -61,7 +61,6 @@ void CodeGenerator::emitExprToXmm0(Expr* expr) { emitExpr(expr, "xmm0", true); }
 void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFloat) {
     if (!expr) return;
     std::string dest = destReg;
-    const char* mov = "movq";
     const char* rax = "rax";
     switch (expr->kind) {
         case Expr::Kind::IntLit: *out_ << "\tmovq\t$" << expr->intVal << ", %" << dest << "\n"; break;
@@ -93,10 +92,60 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
         }
         case Expr::Kind::DictLit: {
             int numPairs = (int)expr->args.size() / 2;
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
             *out_ << "\tcall\tgspp_dict_new\n";
+            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
             for (int i = 0; i < numPairs; i++) {
                 *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i*2].get()); *out_ << "\tpushq\t%rax\n";
-                emitExprToRax(expr->args[i*2+1].get()); *out_ << "\tmovq\t%rax, %rdx\n\tpopq\t%rsi\n\tpopq\t%rdi\n\tpushq\t%rdi\n\tcall\tgspp_dict_set\n\tpopq\t%rax\n";
+                emitExprToRax(expr->args[i*2+1].get());
+                *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                *out_ << "\tcall\tgspp_dict_set\n";
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                *out_ << "\tpopq\t%rax\n";
+            }
+            if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+            break;
+        }
+        case Expr::Kind::SetLit: {
+            int n = (int)expr->args.size();
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+            *out_ << "\tcall\tgspp_set_new\n";
+            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            for (int i = 0; i < n; i++) {
+                *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i].get());
+                *out_ << "\tmovq\t%rax, %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                *out_ << "\tcall\tgspp_set_add\n";
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                *out_ << "\tpopq\t%rax\n";
+            }
+            if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+            break;
+        }
+        case Expr::Kind::TupleLit: {
+            int n = (int)expr->args.size();
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+            *out_ << "\tmovq\t$" << n << ", %" << regs[0] << "\n";
+            *out_ << "\tmovq\t$" << (expr->boolVal ? 1 : 0) << ", %" << regs[1] << "\n";
+            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+            *out_ << "\tcall\tgspp_tuple_new\n";
+            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            for (int i = 0; i < n; i++) {
+                *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i].get());
+                *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tmovq\t$" << i << ", %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                *out_ << "\tcall\tgspp_tuple_set\n";
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                *out_ << "\tpopq\t%rax\n";
             }
             if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
             break;
@@ -123,6 +172,25 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             break;
         }
         case Expr::Kind::Binary: {
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+
+            if (expr->left->exprType.kind == Type::Kind::Set || expr->left->exprType.kind == Type::Kind::Dict) {
+                emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
+                emitExprToRax(expr->right.get()); *out_ << "\tmovq\t%rax, %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                if (expr->op == "|") {
+                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_union\n";
+                    else *out_ << "\tcall\tgspp_dict_union\n";
+                } else if (expr->op == "&") {
+                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_intersection\n";
+                    else *out_ << "\tcall\tgspp_dict_intersection\n";
+                }
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                return;
+            }
             if (expr->op == "and" || expr->op == "or") {
                 std::string endLabel = nextLabel(); emitExprToRax(expr->left.get());
                 if (expr->op == "and") { *out_ << "\ttestq\t%rax, %rax\n\tje\t" << endLabel << "\n"; }
@@ -155,10 +223,25 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             break;
         }
         case Expr::Kind::Index: {
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+
             emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->right.get()); *out_ << "\tpopq\t%rdx\n";
             if (expr->left->exprType.kind == Type::Kind::String) *out_ << "\tmovzbl\t(%rdx,%rax), %eax\n";
             else if (expr->left->exprType.kind == Type::Kind::List) { *out_ << "\tmovq\t(%rdx), %rdx\n\tmovq\t(%rdx,%rax,8), %rax\n"; }
-            else if (expr->left->exprType.kind == Type::Kind::Dict) { *out_ << "\tmovq\t%rdx, %rdi\n\tmovq\t%rax, %rsi\n\tcall\tgspp_dict_get\n"; }
+            else if (expr->left->exprType.kind == Type::Kind::Dict) {
+                *out_ << "\tmovq\t%rdx, %" << regs[0] << "\n\tmovq\t%rax, %" << regs[1] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                *out_ << "\tcall\tgspp_dict_get\n";
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            }
+            else if (expr->left->exprType.kind == Type::Kind::Tuple) {
+                *out_ << "\tmovq\t%rdx, %" << regs[0] << "\n\tmovq\t%rax, %" << regs[1] << "\n";
+                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                *out_ << "\tcall\tgspp_tuple_get\n";
+                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            }
             else { int sz = getTypeSize(expr->exprType); *out_ << "\tmovq\t(%rdx,%rax," << sz << "), %rax\n"; }
             if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
             break;
@@ -198,6 +281,73 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
                 if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
                 if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
                 return;
+            }
+            if (expr->left && (expr->left->exprType.kind == Type::Kind::Set || expr->left->exprType.kind == Type::Kind::Dict)) {
+                if (expr->ident == "len") {
+                    emitExprToRax(expr->left.get());
+                    *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
+                    if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_len\n";
+                    else *out_ << "\tcall\tgspp_dict_len\n";
+                    if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                    if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                    return;
+                }
+                if (expr->left->exprType.kind == Type::Kind::Dict) {
+                    if (expr->ident == "get") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
+                        emitExprToRax(expr->args[0].get()); *out_ << "\tpushq\t%rax\n";
+                        if (expr->args.size() > 1) emitExprToRax(expr->args[1].get()); else *out_ << "\tmovq\t$0, %rax\n";
+                        *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_get_default\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        *out_ << "\tpopq\t%rcx\n"; // cleanup push %regs[0]
+                        if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                        return;
+                    }
+                    if (expr->ident == "pop") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
+                        emitExprToRax(expr->args[0].get()); *out_ << "\tmovq\t%rax, %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_pop\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        *out_ << "\tpopq\t%rcx\n";
+                        if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                        return;
+                    }
+                    if (expr->ident == "remove") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
+                        emitExprToRax(expr->args[0].get()); *out_ << "\tmovq\t%rax, %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_remove\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        return;
+                    }
+                    if (expr->ident == "clear") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_clear\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        return;
+                    }
+                    if (expr->ident == "keys") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_keys\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                        return;
+                    }
+                    if (expr->ident == "values") {
+                        emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
+                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                        *out_ << "\tcall\tgspp_dict_values\n";
+                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                        return;
+                    }
+                }
             }
             if (expr->left && expr->left->exprType.kind == Type::Kind::List) {
                 if (expr->ident == "len") { emitExprToRax(expr->left.get()); *out_ << "\tmovq\t8(%rax), %rax\n"; if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n"; return; }
@@ -253,7 +403,7 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
                     std::string subFunc = (funcName == "log") ? "println" : funcName;
                     if (expr->args[i]->exprType.kind == Type::Kind::String) subFunc += "_string";
                     else if (expr->args[i]->exprType.kind == Type::Kind::Float) subFunc += "_float";
-                    if (i < (int)expr->args.size() - 1) { if (subFunc == "println") subFunc = "print"; if (subFunc == "println_string") subFunc = "print_string"; if (subFunc == "println_float") subFunc = "print_float"; }
+                    if (i < expr->args.size() - 1) { if (subFunc == "println") subFunc = "print"; if (subFunc == "println_string") subFunc = "print_string"; if (subFunc == "println_float") subFunc = "print_float"; }
                     FuncSymbol* fs = resolveFunc(subFunc, "");
                     if (fs) { if (expr->args[i]->exprType.kind == Type::Kind::Float) emitExpr(expr->args[i].get(), "xmm0", true); else emitExpr(expr->args[i].get(), "rdi", false); *out_ << "\tcall\t" << fs->mangledName << "\n"; }
                 }
@@ -287,6 +437,69 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             int offset = (int)(it->second * 8); *out_ << "\tmovq\t" << offset << "(%rax), %" << dest << "\n";
             break;
         }
+        case Expr::Kind::AddressOf: {
+            if (expr->right->kind == Expr::Kind::Var) {
+                std::string loc = getVarLocation(expr->right->ident);
+                if (!loc.empty()) *out_ << "\tleaq\t" << loc << ", %" << dest << "\n";
+            } else if (expr->right->kind == Expr::Kind::Member) {
+                emitExprToRax(expr->right->left.get());
+                Type baseType = expr->right->left->exprType; if (baseType.kind == Type::Kind::Pointer) baseType = *baseType.ptrTo;
+                StructDef* sd = resolveStruct(baseType.structName, baseType.ns);
+                if (sd) {
+                    auto it = sd->memberIndex.find(expr->right->member);
+                    if (it != sd->memberIndex.end()) {
+                        int offset = (int)(it->second * 8);
+                        *out_ << "\taddq\t$" << offset << ", %rax\n";
+                        if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                    }
+                }
+            }
+            break;
+        }
+        case Expr::Kind::Deref: {
+            emitExprToRax(expr->right.get());
+            *out_ << "\tmovq\t(%rax), %" << dest << "\n";
+            break;
+        }
+        case Expr::Kind::New: {
+            int size = getTypeSize(*expr->targetType);
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+            if (expr->left) {
+                emitExprToRax(expr->left.get());
+                *out_ << "\timulq\t$" << size << ", %rax\n";
+                *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
+            } else {
+                *out_ << "\tmovq\t$" << size << ", %" << regs[0] << "\n";
+            }
+            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+            *out_ << "\tcall\tmalloc\n";
+            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
+            break;
+        }
+        case Expr::Kind::Delete: {
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+            emitExpr(expr->right.get(), regs[0], false);
+            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+            *out_ << "\tcall\tfree\n";
+            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            break;
+        }
+        case Expr::Kind::Cast: {
+            emitExpr(expr->right.get(), destReg, wantFloat);
+            break;
+        }
+        case Expr::Kind::Sizeof: {
+            int size = 0;
+            if (expr->targetType) size = getTypeSize(*expr->targetType);
+            else size = getTypeSize(expr->right->exprType);
+            *out_ << "\tmovq\t$" << size << ", %" << dest << "\n";
+            break;
+        }
         default: break;
     }
 }
@@ -297,8 +510,35 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
         case Stmt::Kind::Block: { deferStack_.emplace_back(); for (auto& s : stmt->blockStmts) emitStmt(s.get()); auto& defers = deferStack_.back(); for (auto it = defers.rbegin(); it != defers.rend(); ++it) emitStmt(*it); deferStack_.pop_back(); break; }
         case Stmt::Kind::VarDecl: if (stmt->varInit) { emitExprToRax(stmt->varInit.get()); std::string loc = getVarLocation(stmt->varName); if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n"; } break;
         case Stmt::Kind::Assign: {
+            const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+            const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
+            const char** regs = isLinux_ ? regs_linux : regs_win;
+
             if (stmt->assignTarget->kind == Expr::Kind::Var) { emitExprToRax(stmt->assignValue.get()); std::string loc = getVarLocation(stmt->assignTarget->ident); if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n"; }
             else if (stmt->assignTarget->kind == Expr::Kind::Member) { emitExprToRax(stmt->assignTarget->left.get()); *out_ << "\tpushq\t%rax\n"; emitExprToRax(stmt->assignValue.get()); *out_ << "\tmovq\t%rax, %rcx\n\tpopq\t%rax\n"; Type baseType = stmt->assignTarget->left->exprType; if (baseType.kind == Type::Kind::Pointer) baseType = *baseType.ptrTo; StructDef* sd = resolveStruct(baseType.structName, baseType.ns); if (sd) { auto it = sd->memberIndex.find(stmt->assignTarget->member); if (it != sd->memberIndex.end()) *out_ << "\tmovq\t%rcx, " << (it->second * 8) << "(%rax)\n"; } }
+            else if (stmt->assignTarget->kind == Expr::Kind::Index) {
+                Type baseTy = stmt->assignTarget->left->exprType;
+                if (baseTy.kind == Type::Kind::Tuple) {
+                    emitExprToRax(stmt->assignTarget->left.get()); *out_ << "\tpushq\t%rax\n";
+                    emitExprToRax(stmt->assignTarget->right.get()); *out_ << "\tpushq\t%rax\n";
+                    emitExprToRax(stmt->assignValue.get());
+                    *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
+                    if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
+                    *out_ << "\tcall\tgspp_tuple_set\n";
+                    if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                } else if (baseTy.kind == Type::Kind::List) {
+                    emitExprToRax(stmt->assignTarget->left.get()); *out_ << "\tpushq\t%rax\n";
+                    emitExprToRax(stmt->assignTarget->right.get()); *out_ << "\tpushq\t%rax\n";
+                    emitExprToRax(stmt->assignValue.get());
+                    *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
+                    *out_ << "\tmovq\t(%" << regs[0] << "), %rax\n"; // list->data
+                    *out_ << "\tmovq\t%" << regs[2] << ", (%rax,%" << regs[1] << ",8)\n";
+                }
+            } else if (stmt->assignTarget->kind == Expr::Kind::Deref) {
+                emitExprToRax(stmt->assignTarget->right.get()); *out_ << "\tpushq\t%rax\n";
+                emitExprToRax(stmt->assignValue.get()); *out_ << "\tmovq\t%rax, %rcx\n\tpopq\t%rax\n";
+                *out_ << "\tmovq\t%rcx, (%rax)\n";
+            }
             break;
         }
         case Stmt::Kind::If: { std::string elseLabel = nextLabel(), endLabel = nextLabel(); emitExprToRax(stmt->condition.get()); *out_ << "\ttestq\t%rax, %rax\n\tje\t" << elseLabel << "\n"; emitStmt(stmt->thenBranch.get()); *out_ << "\tjmp\t" << endLabel << "\n" << elseLabel << ":\n"; if (stmt->elseBranch) emitStmt(stmt->elseBranch.get()); *out_ << endLabel << ":\n"; break; }
@@ -319,6 +559,7 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
         case Stmt::Kind::Case: { std::string nextCase = nextLabel(); emitExprToRax(stmt->condition.get()); *out_ << "\tcmpq\t%rax, (%rsp)\n\tjne\t" << nextCase << "\n"; emitStmt(stmt->body.get()); *out_ << nextCase << ":\n"; break; }
         case Stmt::Kind::Defer: if (!deferStack_.empty()) deferStack_.back().push_back(stmt->body.get()); break;
         case Stmt::Kind::Return: if (stmt->returnExpr) { if (stmt->returnExpr->exprType.kind == Type::Kind::Float) emitExprToXmm0(stmt->returnExpr.get()); else emitExprToRax(stmt->returnExpr.get()); } else *out_ << "\tmovq\t$0, %rax\n"; for (auto sit = deferStack_.rbegin(); sit != deferStack_.rend(); ++sit) for (auto it = sit->rbegin(); it != sit->rend(); ++it) emitStmt(*it); *out_ << "\tleave\n\tret\n"; break;
+        case Stmt::Kind::For: emitStmt(stmt->initStmt.get()); { std::string condLabel = nextLabel(), endLabel = nextLabel(); *out_ << condLabel << ":\n"; emitExprToRax(stmt->condition.get()); *out_ << "\ttestq\t%rax, %rax\n\tje\t" << endLabel << "\n"; emitStmt(stmt->body.get()); emitStmt(stmt->stepStmt.get()); *out_ << "\tjmp\t" << condLabel << "\n" << endLabel << ":\n"; } break;
         case Stmt::Kind::ExprStmt: emitExprToRax(stmt->expr.get()); break;
         case Stmt::Kind::Unsafe: emitStmt(stmt->body.get()); break;
         case Stmt::Kind::Asm: *out_ << "\t" << stmt->asmCode << "\n"; break;
@@ -336,6 +577,7 @@ void CodeGenerator::emitFunc(const FuncSymbol& fs) {
         for (size_t i = 0; i < fs.decl->params.size(); i++) { std::string loc = getVarLocation(fs.decl->params[i].name); if (loc.empty()) continue; if (fs.decl->params[i].type.kind == Type::Kind::Float) { if (freg < 8) *out_ << "\tmovq\t%" << fregs[freg++] << ", " << loc << "\n"; } else { if (ireg < 6) *out_ << "\tmovq\t%" << regs[ireg++] << ", " << loc << "\n"; } }
     }
     if (fs.decl && fs.decl->body) emitStmt(fs.decl->body.get());
+    if (fs.mangledName == "main") *out_ << "\tmovq\t$0, %rax\n";
     *out_ << "\tleave\n\tret\n\n"; currentFunc_ = nullptr;
 }
 
@@ -349,24 +591,15 @@ void CodeGenerator::emitProgram() {
 void CodeGenerator::emitProgramBody() {
     *out_ << "\t.extern\tprintf\n\t.extern\tstrlen\n\t.extern\tstrcpy\n\t.extern\tstrcat\n\t.extern\tmalloc\n\t.extern\tfree\n\t.extern\tabs\n\t.extern\tsqrt\n";
     *out_ << "\t.extern\texit\n\t.extern\tusleep\n\t.extern\tsin\n\t.extern\tcos\n\t.extern\ttan\n\t.extern\tpow\n";
-    *out_ << "\t.globl\tprintln\nprintln:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tmovq\t%rdi, %rsi\n\tleaq\t.LC_fmt_d_nl(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\tprint\nprint:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tmovq\t%rdi, %rsi\n\tleaq\t.LC_fmt_d(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\tprintln_float\nprintln_float:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tleaq\t.LC_fmt_f_nl(%rip), %rdi\n\tmovl\t$1, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\tprint_float\nprint_float:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tleaq\t.LC_fmt_f(%rip), %rdi\n\tmovl\t$1, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\tprintln_string\nprintln_string:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tmovq\t%rdi, %rsi\n\tleaq\t.LC_fmt_s_nl(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\tprint_string\nprint_string:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tmovq\t%rdi, %rsi\n\tleaq\t.LC_fmt_s(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
-    *out_ << "\t.globl\t_gspp_strcat\n_gspp_strcat:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tcall\tstrlen\n\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rdi\n\tcall\tstrlen\n\taddq\t-24(%rbp), %rax\n\tincq\t%rax\n\tmovq\t%rax, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -32(%rbp)\n\tmovq\t-32(%rbp), %rdi\n\tmovq\t-8(%rbp), %rsi\n\tcall\tstrcpy\n\tmovq\t-32(%rbp), %rdi\n\tmovq\t-16(%rbp), %rsi\n\tcall\tstrcat\n\tmovq\t-32(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.extern\tscanf\n\t.globl\tgspp_input\ngspp_input:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n\tmovq\t$256, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n\tleaq\t.LC_fmt_s(%rip), %rdi\n\tmovq\t-8(%rbp), %rsi\n\tmovl\t$0, %eax\n\tcall\tscanf\n\tmovq\t-8(%rbp), %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.extern\tfopen\n\t.extern\tfseek\n\t.extern\tftell\n\t.extern\trewind\n\t.extern\tfread\n\t.extern\tfclose\n.LC_mode_r:\n\t.string \"r\"\n\t.globl\tgspp_read_file\ngspp_read_file:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tleaq\t.LC_mode_r(%rip), %rsi\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LRF_err\n\tmovq\t%rax, -8(%rbp)\n\tmovq\t%rax, %rdi\n\tmovl\t$0, %esi\n\tmovl\t$2, %edx\n\tcall\tfseek\n\tmovq\t-8(%rbp), %rdi\n\tcall\tftell\n\tmovq\t%rax, -16(%rbp)\n\tmovq\t-8(%rbp), %rdi\n\tcall\trewind\n\tmovq\t-16(%rbp), %rdi\n\tincq\t%rdi\n\tcall\tmalloc\n\tmovq\t%rax, -24(%rbp)\n\tmovq\t-24(%rbp), %rdi\n\tmovl\t$1, %esi\n\tmovq\t-16(%rbp), %rdx\n\tmovq\t-8(%rbp), %rcx\n\tcall\tfread\n\tmovq\t-24(%rbp), %rdx\n\taddq\t-16(%rbp), %rdx\n\tmovb\t$0, (%rdx)\n\tmovq\t-8(%rbp), %rdi\n\tcall\tfclose\n\tmovq\t-24(%rbp), %rax\n\tjmp\t.LRF_end\n.LRF_err:\n\tmovq\t$0, %rax\n.LRF_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << ".LC_mode_w:\n\t.string \"w\"\n\t.extern\tfputs\n\t.globl\tgspp_write_file\ngspp_write_file:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t-8(%rbp), %rdi\n\tleaq\t.LC_mode_w(%rip), %rsi\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LWF_end\n\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rdi\n\tmovq\t-24(%rbp), %rsi\n\tcall\tfputs\n\tmovq\t-24(%rbp), %rdi\n\tcall\tfclose\n.LWF_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.extern\tsystem\n\t.globl\tgspp_exec\ngspp_exec:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n\tcall\tsystem\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.globl\tgspp_list_new\ngspp_list_new:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n\tmovq\t$24, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n\tmovq\t$80, %rdi\n\tcall\tmalloc\n\tmovq\t-8(%rbp), %rdx\n\tmovq\t%rax, (%rdx)\n\tmovq\t$0, 8(%rdx)\n\tmovq\t$10, 16(%rdx)\n\tmovq\t-8(%rbp), %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.extern\trealloc\n\t.globl\tgspp_list_append\ngspp_list_append:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t-8(%rbp), %rax\n\tmovq\t8(%rax), %rcx\n\tcmpq\t16(%rax), %rcx\n\tjl\t.Lappend_now_lin\n\tmovq\t16(%rax), %rdx\n\tshlq\t$1, %rdx\n\tmovq\t%rdx, 16(%rax)\n\tmovq\t(%rax), %rdi\n\tshlq\t$3, %rdx\n\tmovq\t%rdx, %rsi\n\tcall\trealloc\n\tmovq\t-8(%rbp), %rdx\n\tmovq\t%rax, (%rdx)\n.Lappend_now_lin:\n\tmovq\t-8(%rbp), %rax\n\tmovq\t(%rax), %rdx\n\tmovq\t8(%rax), %rcx\n\tmovq\t-16(%rbp), %rdi\n\tmovq\t%rdi, (%rdx,%rcx,8)\n\tincq\t8(%rax)\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.globl\tgspp_list_slice\ngspp_list_slice:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t%rdx, -24(%rbp)\n\tmovq\t-24(%rbp), %rax\n\tsubq\t-16(%rbp), %rax\n\tmovq\t%rax, %rdi\n\tcall\tgspp_list_new\n\tmovq\t%rax, -32(%rbp)\n\tmovq\t-16(%rbp), %rax\n\tmovq\t%rax, -40(%rbp)\n.Lslice_loop:\n\tmovq\t-40(%rbp), %rax\n\tcmpq\t-24(%rbp), %rax\n\tjge\t.Lslice_end\n\tmovq\t-8(%rbp), %rdx\n\tmovq\t(%rdx), %rdx\n\tmovq\t(%rdx,%rax,8), %rsi\n\tmovq\t-32(%rbp), %rdi\n\tcall\tgspp_list_append\n\tincq\t-40(%rbp)\n\tjmp\t.Lslice_loop\n.Lslice_end:\n\tmovq\t-32(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.globl\tgspp_str_slice\ngspp_str_slice:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t%rdx, -24(%rbp)\n\tmovq\t-24(%rbp), %rax\n\tsubq\t-16(%rbp), %rax\n\tincq\t%rax\n\tmovq\t%rax, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -32(%rbp)\n\tmovq\t-16(%rbp), %rax\n\tmovq\t%rax, -40(%rbp)\n.Lstr_slice_loop:\n\tmovq\t-40(%rbp), %rax\n\tcmpq\t-24(%rbp), %rax\n\tjge\t.Lstr_slice_end\n\tmovq\t-8(%rbp), %rdx\n\tmovb\t(%rdx,%rax), %cl\n\tmovq\t-32(%rbp), %rdx\n\tmovq\t-40(%rbp), %rax\n\tsubq\t-16(%rbp), %rax\n\tmovb\t%cl, (%rdx,%rax)\n\tincq\t-40(%rbp)\n\tjmp\t.Lstr_slice_loop\n.Lstr_slice_end:\n\tmovq\t-32(%rbp), %rdx\n\tmovq\t-24(%rbp), %rax\n\tsubq\t-16(%rbp), %rax\n\tmovb\t$0, (%rdx,%rax)\n\tmovq\t-32(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.extern\tstrcmp\n\t.globl\tgspp_dict_new\ngspp_dict_new:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tmovq\t$0, %rdi\n\tcall\tgspp_list_new\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.globl\tgspp_dict_set\ngspp_dict_set:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t%rdx, -24(%rbp)\n\tmovq\t$16, %rdi\n\tcall\tmalloc\n\tmovq\t-16(%rbp), %rcx\n\tmovq\t%rcx, (%rax)\n\tmovq\t-24(%rbp), %rcx\n\tmovq\t%rcx, 8(%rax)\n\tmovq\t%rax, %rsi\n\tmovq\t-8(%rbp), %rdi\n\tcall\tgspp_list_append\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
-    *out_ << "\t.globl\tgspp_dict_get\ngspp_dict_get:\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n\tmovq\t$0, -24(%rbp)\n.Ldict_loop:\n\tmovq\t-8(%rbp), %rax\n\tmovq\t8(%rax), %rdx\n\tcmpq\t-24(%rbp), %rdx\n\tjle\t.Ldict_not_found\n\tmovq\t(%rax), %rax\n\tmovq\t-24(%rbp), %rcx\n\tmovq\t(%rax,%rcx,8), %rax\n\tmovq\t(%rax), %rdi\n\tmovq\t-16(%rbp), %rsi\n\ttestq\t%rdi, %rdi\n\tje\t.Ldict_cmp_int\n\tcall\tstrcmp\n\ttestl\t%eax, %eax\n\tje\t.Ldict_found\n\tjmp\t.Ldict_next\n.Ldict_cmp_int:\n\tcmpq\t%rdi, -16(%rbp)\n\tje\t.Ldict_found\n.Ldict_next:\n\tincq\t-24(%rbp)\n\tjmp\t.Ldict_loop\n.Ldict_found:\n\tmovq\t-8(%rbp), %rax\n\tmovq\t(%rax), %rax\n\tmovq\t-24(%rbp), %rdx\n\tmovq\t(%rax,%rdx,8), %rax\n\tmovq\t8(%rax), %rax\n\tjmp\t.Ldict_end\n.Ldict_not_found:\n\tmovq\t$0, %rax\n.Ldict_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+    *out_ << "\t.extern\tprintln\n\t.extern\tprint\n\t.extern\tprintln_float\n\t.extern\tprint_float\n\t.extern\tprintln_string\n\t.extern\tprint_string\n";
+    *out_ << "\t.extern\t_gspp_strcat\n\t.extern\tgspp_input\n\t.extern\tgspp_read_file\n\t.extern\tgspp_write_file\n\t.extern\tgspp_exec\n";
+    *out_ << "\t.extern\tgspp_list_new\n\t.extern\tgspp_list_append\n\t.extern\tgspp_list_slice\n";
+    *out_ << "\t.extern\tgspp_str_slice\n\t.extern\tgspp_dict_new\n\t.extern\tgspp_dict_set\n\t.extern\tgspp_dict_get\n";
+    *out_ << "\t.extern\tgspp_tuple_new\n\t.extern\tgspp_tuple_set\n\t.extern\tgspp_tuple_get\n";
+    *out_ << "\t.extern\tgspp_set_new\n\t.extern\tgspp_set_add\n\t.extern\tgspp_set_union\n\t.extern\tgspp_set_intersection\n";
+    *out_ << "\t.extern\tgspp_dict_union\n\t.extern\tgspp_dict_intersection\n\t.extern\tgspp_dict_len\n";
+    *out_ << "\t.extern\tgspp_dict_get_default\n\t.extern\tgspp_dict_pop\n\t.extern\tgspp_dict_remove\n\t.extern\tgspp_dict_clear\n\t.extern\tgspp_dict_keys\n\t.extern\tgspp_dict_values\n";
+    *out_ << "\t.extern\tgspp_set_len\n";
     for (const auto& pair : semantic_->functions()) emitFunc(pair.second);
     for (const auto& modPair : semantic_->moduleFunctions()) for (const auto& pair : modPair.second) emitFunc(pair.second);
     for (const auto& pair : semantic_->structs()) for (const auto& mPair : pair.second.methods) emitFunc(mPair.second);

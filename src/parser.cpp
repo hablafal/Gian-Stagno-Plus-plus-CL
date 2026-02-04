@@ -133,10 +133,64 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         }
         return Expr::makeVar(id, l);
     }
+    if (match(TokenKind::Mut)) {
+        expect(TokenKind::LParen, "expected '(' after 'mut'");
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::TupleLit;
+        e->loc = l;
+        e->boolVal = true; // reusing boolVal as 'isMutable' flag for TupleLit
+        do {
+            e->args.push_back(parseExpr());
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::RParen, "expected ')' after mutable tuple elements");
+        return e;
+    }
     if (match(TokenKind::LParen)) {
+        auto first = parseExpr();
+        if (check(TokenKind::Comma)) {
+            auto e = std::make_unique<Expr>();
+            e->kind = Expr::Kind::TupleLit;
+            e->loc = l;
+            e->boolVal = false; // immutable
+            e->args.push_back(std::move(first));
+            while (match(TokenKind::Comma)) {
+                if (check(TokenKind::RParen)) break;
+                e->args.push_back(parseExpr());
+            }
+            expect(TokenKind::RParen, "expected ')' after tuple elements");
+            return e;
+        }
+        expect(TokenKind::RParen, "expected ')'");
+        return first;
+    }
+    if (match(TokenKind::Cast)) {
+        expect(TokenKind::Lt, "expected '<' after cast");
+        auto ty = parseType();
+        expect(TokenKind::Gt, "expected '>' after type in cast");
+        expect(TokenKind::LParen, "expected '(' after cast type");
         auto e = parseExpr();
         expect(TokenKind::RParen, "expected ')'");
-        return e;
+        auto c = std::make_unique<Expr>();
+        c->kind = Expr::Kind::Cast;
+        c->targetType = std::move(ty);
+        c->right = std::move(e);
+        c->loc = l;
+        return c;
+    }
+    if (match(TokenKind::Sizeof)) {
+        expect(TokenKind::LParen, "expected '(' after sizeof");
+        auto c = std::make_unique<Expr>();
+        c->kind = Expr::Kind::Sizeof;
+        if (check(TokenKind::Int) || check(TokenKind::Float) || check(TokenKind::Bool) ||
+            check(TokenKind::String) || check(TokenKind::Arr) || check(TokenKind::Star) ||
+            check(TokenKind::Char) || check(TokenKind::Text)) {
+            c->targetType = parseType();
+        } else {
+            c->right = parseExpr();
+        }
+        expect(TokenKind::RParen, "expected ')' after sizeof");
+        c->loc = l;
+        return c;
     }
     if (match(TokenKind::New)) {
         auto ty = parseType();
@@ -200,20 +254,46 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         }
     }
     if (match(TokenKind::LBrace)) {
-        auto e = std::make_unique<Expr>();
-        e->kind = Expr::Kind::DictLit;
-        e->loc = l;
-        if (!check(TokenKind::RBrace)) {
-            do {
-                auto key = parseExpr();
-                expect(TokenKind::Colon, "expected ':' after key");
-                auto val = parseExpr();
-                e->args.push_back(std::move(key));
-                e->args.push_back(std::move(val));
-            } while (match(TokenKind::Comma));
+        SourceLoc loc = l;
+        if (check(TokenKind::RBrace)) {
+            advance();
+            auto e = std::make_unique<Expr>();
+            e->kind = Expr::Kind::DictLit;
+            e->loc = loc;
+            return e;
         }
-        expect(TokenKind::RBrace, "expected '}' after dict literal");
-        return e;
+        auto first = parseExpr();
+        if (match(TokenKind::Colon)) {
+            // It's a Dict
+            auto e = std::make_unique<Expr>();
+            e->kind = Expr::Kind::DictLit;
+            e->loc = loc;
+            auto val = parseExpr();
+            e->args.push_back(std::move(first));
+            e->args.push_back(std::move(val));
+            while (match(TokenKind::Comma)) {
+                if (check(TokenKind::RBrace)) break;
+                auto k = parseExpr();
+                expect(TokenKind::Colon, "expected ':' after key");
+                auto v = parseExpr();
+                e->args.push_back(std::move(k));
+                e->args.push_back(std::move(v));
+            }
+            expect(TokenKind::RBrace, "expected '}' after dict literal");
+            return e;
+        } else {
+            // It's a Set
+            auto e = std::make_unique<Expr>();
+            e->kind = Expr::Kind::SetLit;
+            e->loc = loc;
+            e->args.push_back(std::move(first));
+            while (match(TokenKind::Comma)) {
+                if (check(TokenKind::RBrace)) break;
+                e->args.push_back(parseExpr());
+            }
+            expect(TokenKind::RBrace, "expected '}' after set literal");
+            return e;
+        }
     }
     error("expected expression");
 advance(); // Progress!
@@ -298,8 +378,8 @@ std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
 }
 
 int Parser::binPrec(const std::string& op) {
-    if (op == "or") return 1;
-    if (op == "and") return 2;
+    if (op == "or" || op == "|") return 1;
+    if (op == "and" || op == "&") return 2;
     if (op == "==" || op == "!=") return 3;
     if (op == "<" || op == ">" || op == "<=" || op == ">=") return 4;
     if (op == "+" || op == "-") return 5;
@@ -353,6 +433,8 @@ std::unique_ptr<Expr> Parser::parseBinary(int minPrec) {
         else if (check(TokenKind::Ge)) op = ">=";
         else if (check(TokenKind::And)) op = "and";
         else if (check(TokenKind::Or)) op = "or";
+        else if (check(TokenKind::Amp)) op = "&";
+        else if (check(TokenKind::Pipe)) op = "|";
         else break;
         int prec = binPrec(op);
         if (prec < minPrec) break;
@@ -781,6 +863,40 @@ std::unique_ptr<Program> Parser::parseProgram() {
             } else {
                 error("expected string literal or identifier after 'import' or 'use'");
             }
+            if (match(TokenKind::As)) {
+                if (check(TokenKind::Ident)) {
+                    imp.alias = current_.text;
+                    advance();
+                } else {
+                    error("expected alias name after 'as'");
+                }
+            }
+            match(TokenKind::Semicolon);
+            prog->imports.push_back(std::move(imp));
+        } else if (match(TokenKind::From)) {
+            Import imp;
+            imp.loc = loc();
+            if (check(TokenKind::Ident)) {
+                imp.name = current_.text;
+                imp.path = imp.name + ".gs";
+                advance();
+            } else if (check(TokenKind::StringLit)) {
+                imp.path = current_.text;
+                size_t slash = imp.path.find_last_of("/\\");
+                std::string filename = (slash == std::string::npos) ? imp.path : imp.path.substr(slash + 1);
+                size_t dot = filename.find_last_of('.');
+                imp.name = (dot == std::string::npos) ? filename : filename.substr(0, dot);
+                advance();
+            }
+            expect(TokenKind::Import, "expected 'import' after module name");
+            do {
+                if (check(TokenKind::Ident)) {
+                    imp.importNames.push_back(current_.text);
+                    advance();
+                } else {
+                    error("expected name to import");
+                }
+            } while (match(TokenKind::Comma));
             match(TokenKind::Semicolon);
             prog->imports.push_back(std::move(imp));
         } else if (match(TokenKind::Extern)) {

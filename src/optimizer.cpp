@@ -19,9 +19,19 @@ void Optimizer::optimizeExpr(Expr* expr) {
         }
         case Expr::Kind::Unary: optimizeExpr(expr->right.get()); break;
         case Expr::Kind::Call: for (auto& a : expr->args) optimizeExpr(a.get()); if (expr->left) optimizeExpr(expr->left.get()); break;
+        case Expr::Kind::Slice:
+            optimizeExpr(expr->left.get());
+            for (auto& a : expr->args) optimizeExpr(a.get());
+            break;
+        case Expr::Kind::Comprehension: optimizeExpr(expr->left.get()); optimizeExpr(expr->right.get()); if (expr->cond) optimizeExpr(expr->cond.get()); break;
         case Expr::Kind::Member: optimizeExpr(expr->left.get()); break;
         case Expr::Kind::Index: optimizeExpr(expr->left.get()); optimizeExpr(expr->right.get()); break;
-        case Expr::Kind::ListLit: for (auto& a : expr->args) optimizeExpr(a.get()); break;
+        case Expr::Kind::ListLit:
+        case Expr::Kind::DictLit:
+        case Expr::Kind::SetLit:
+        case Expr::Kind::TupleLit:
+            for (auto& a : expr->args) optimizeExpr(a.get());
+            break;
         case Expr::Kind::Ternary: optimizeExpr(expr->cond.get()); optimizeExpr(expr->left.get()); optimizeExpr(expr->right.get()); break;
         default: break;
     }

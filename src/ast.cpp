@@ -4,6 +4,7 @@ namespace gspp {
 
 Type::Type(const Type& other) {
     kind = other.kind;
+    isMutable = other.isMutable;
     structName = other.structName;
     ns = other.ns;
     typeArgs = other.typeArgs;
@@ -14,6 +15,7 @@ Type::Type(const Type& other) {
 Type& Type::operator=(const Type& other) {
     if (this == &other) return *this;
     kind = other.kind;
+    isMutable = other.isMutable;
     structName = other.structName;
     ns = other.ns;
     typeArgs = other.typeArgs;

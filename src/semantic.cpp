@@ -22,6 +22,9 @@ void SemanticAnalyzer::addModule(const std::string& name, Program* prog) {
         if (f.typeParams.empty()) analyzeFunc(f);
         else moduleFuncTemplates_[name][f.name] = &f;
     }
+    for (const auto& s : prog->structs) {
+        for (const auto& m : s.methods) analyzeMethod(s.name, m);
+    }
     moduleStructs_[name] = std::move(structs_);
     moduleFunctions_[name] = std::move(functions_);
     structs_ = std::move(oldStructs);
@@ -71,6 +74,8 @@ std::string SemanticAnalyzer::typeName(const Type& t) {
         case Type::Kind::TypeParam: return t.structName;
         case Type::Kind::Pointer: return "ptr_" + typeName(*t.ptrTo);
         case Type::Kind::Dict: return "dict_" + typeName(*t.ptrTo) + "_" + typeName(*t.ptrTo->ptrTo);
+        case Type::Kind::Tuple: return "tuple";
+        case Type::Kind::Set: return "set";
         case Type::Kind::StructRef: {
             std::string n = t.ns.empty() ? t.structName : t.ns + "_" + t.structName;
             for (const auto& arg : t.typeArgs) n += "_" + typeName(arg);
@@ -221,10 +226,11 @@ void SemanticAnalyzer::error(const std::string& msg, SourceLoc loc) {
 }
 
 StructDef* SemanticAnalyzer::getStruct(const std::string& name, const std::string& ns) {
-    if (ns.empty()) {
+    if (ns.empty() || ns == currentNamespace_) {
         auto i = structs_.find(name);
-        return i == structs_.end() ? nullptr : &i->second;
+        if (i != structs_.end()) return &i->second;
     }
+    if (ns.empty()) return nullptr;
     auto mi = moduleStructs_.find(ns);
     if (mi == moduleStructs_.end()) return nullptr;
     auto i = mi->second.find(name);
@@ -232,10 +238,11 @@ StructDef* SemanticAnalyzer::getStruct(const std::string& name, const std::strin
 }
 
 FuncSymbol* SemanticAnalyzer::getFunc(const std::string& name, const std::string& ns) {
-    if (ns.empty()) {
+    if (ns.empty() || ns == currentNamespace_) {
         auto i = functions_.find(name);
-        return i == functions_.end() ? nullptr : &i->second;
+        if (i != functions_.end()) return &i->second;
     }
+    if (ns.empty()) return nullptr;
     auto mi = moduleFunctions_.find(ns);
     if (mi == moduleFunctions_.end()) return nullptr;
     auto i = mi->second.find(name);
@@ -401,6 +408,10 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
                 expr->exprType.kind = Type::Kind::Bool;
                 return expr->exprType;
             }
+            if ((l.kind == Type::Kind::Set || l.kind == Type::Kind::Dict) && (expr->op == "|" || expr->op == "&")) {
+                expr->exprType = l;
+                return l;
+            }
             expr->exprType = l;
             return l;
         }
@@ -433,6 +444,18 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
                     if (receiverType.kind == Type::Kind::List) {
                         if (expr->ident == "append") { if (!expr->args.empty()) analyzeExpr(expr->args[0].get()); expr->exprType.kind = Type::Kind::Void; return expr->exprType; }
                         if (expr->ident == "len") { expr->exprType.kind = Type::Kind::Int; return expr->exprType; }
+                    }
+                    if (receiverType.kind == Type::Kind::Set) {
+                        if (expr->ident == "len") { expr->exprType.kind = Type::Kind::Int; return expr->exprType; }
+                    }
+                    if (receiverType.kind == Type::Kind::Dict) {
+                        if (expr->ident == "len") { expr->exprType.kind = Type::Kind::Int; return expr->exprType; }
+                        if (expr->ident == "get") { for(auto& a: expr->args) analyzeExpr(a.get()); expr->exprType.kind = Type::Kind::Int; return expr->exprType; }
+                        if (expr->ident == "pop") { for(auto& a: expr->args) analyzeExpr(a.get()); expr->exprType.kind = Type::Kind::Int; return expr->exprType; }
+                        if (expr->ident == "remove") { for(auto& a: expr->args) analyzeExpr(a.get()); expr->exprType.kind = Type::Kind::Void; return expr->exprType; }
+                        if (expr->ident == "clear") { expr->exprType.kind = Type::Kind::Void; return expr->exprType; }
+                        if (expr->ident == "keys") { expr->exprType.kind = Type::Kind::List; return expr->exprType; }
+                        if (expr->ident == "values") { expr->exprType.kind = Type::Kind::List; return expr->exprType; }
                     }
                     if (receiverType.kind == Type::Kind::StructRef || (receiverType.kind == Type::Kind::Pointer && receiverType.ptrTo && receiverType.ptrTo->kind == Type::Kind::StructRef)) {
                         Type& base = (receiverType.kind == Type::Kind::Pointer) ? *receiverType.ptrTo : receiverType;
@@ -494,7 +517,8 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             analyzeExpr(expr->right.get());
             if (baseTy.kind == Type::Kind::List || baseTy.kind == Type::Kind::Pointer) expr->exprType = *baseTy.ptrTo;
             else if (baseTy.kind == Type::Kind::String) expr->exprType.kind = Type::Kind::Char;
-            else if (baseTy.kind == Type::Kind::Dict) expr->exprType = *baseTy.ptrTo->ptrTo; // Dict is List<Pair<K,V>> internally? No, let's say Dict<K,V> is Struct with List<K> and List<V> or similar.
+            else if (baseTy.kind == Type::Kind::Dict) expr->exprType = *baseTy.ptrTo->ptrTo;
+            else if (baseTy.kind == Type::Kind::Tuple) expr->exprType.kind = Type::Kind::Int;
             return expr->exprType;
         }
         case Expr::Kind::Slice: {
@@ -529,6 +553,17 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             expr->exprType.ptrTo->ptrTo = std::make_unique<Type>(valType);
             return expr->exprType;
         }
+        case Expr::Kind::TupleLit: {
+            expr->exprType.kind = Type::Kind::Tuple;
+            expr->exprType.isMutable = expr->boolVal; // parser set this
+            for (auto& a : expr->args) analyzeExpr(a.get());
+            return expr->exprType;
+        }
+        case Expr::Kind::SetLit: {
+            expr->exprType.kind = Type::Kind::Set;
+            for (auto& a : expr->args) analyzeExpr(a.get());
+            return expr->exprType;
+        }
         case Expr::Kind::Comprehension: {
             pushScope();
             Type listTy = analyzeExpr(expr->right.get());
@@ -540,6 +575,49 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             popScope();
             expr->exprType.kind = Type::Kind::List;
             expr->exprType.ptrTo = std::make_unique<Type>(resElemTy);
+            return expr->exprType;
+        }
+        case Expr::Kind::AddressOf: {
+            Type operandTy = analyzeExpr(expr->right.get());
+            expr->exprType.kind = Type::Kind::Pointer;
+            expr->exprType.ptrTo = std::make_unique<Type>(operandTy);
+            return expr->exprType;
+        }
+        case Expr::Kind::Deref: {
+            Type operandTy = analyzeExpr(expr->right.get());
+            if (operandTy.kind != Type::Kind::Pointer) {
+                error("dereferencing non-pointer type", expr->loc);
+                return Type{Type::Kind::Int};
+            }
+            expr->exprType = *operandTy.ptrTo;
+            return expr->exprType;
+        }
+        case Expr::Kind::New: {
+            Type target = resolveType(*expr->targetType);
+            if (expr->left) { // Array size
+                analyzeExpr(expr->left.get());
+            }
+            expr->exprType.kind = Type::Kind::Pointer;
+            expr->exprType.ptrTo = std::make_unique<Type>(target);
+            return expr->exprType;
+        }
+        case Expr::Kind::Delete: {
+            analyzeExpr(expr->right.get());
+            expr->exprType.kind = Type::Kind::Void;
+            return expr->exprType;
+        }
+        case Expr::Kind::Cast: {
+            analyzeExpr(expr->right.get());
+            expr->exprType = resolveType(*expr->targetType);
+            return expr->exprType;
+        }
+        case Expr::Kind::Sizeof: {
+            if (expr->targetType) {
+                resolveType(*expr->targetType);
+            } else {
+                analyzeExpr(expr->right.get());
+            }
+            expr->exprType.kind = Type::Kind::Int;
             return expr->exprType;
         }
         default: return Type{Type::Kind::Int};
@@ -577,6 +655,15 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
                         sd->sizeBytes += 8;
                     } else sd->members[sd->memberIndex[stmt->assignTarget->member]].second = valTy;
                 }
+            }
+            if (stmt->assignTarget->kind == Expr::Kind::Index) {
+                Type baseTy = analyzeExpr(stmt->assignTarget->left.get());
+                if (baseTy.kind == Type::Kind::Tuple && !baseTy.isMutable) {
+                    error("cannot assign to immutable tuple", stmt->assignTarget->loc);
+                }
+            }
+            if (stmt->assignTarget->kind == Expr::Kind::Deref) {
+                analyzeExpr(stmt->assignTarget.get());
             }
             if (stmt->assignTarget->kind == Expr::Kind::Var) {
                 VarSymbol* vs = lookupVar(stmt->assignTarget->ident);
@@ -617,6 +704,20 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
 }
 
 void SemanticAnalyzer::analyzeProgram() {
+    for (const auto& imp : program_->imports) {
+        if (!imp.importNames.empty()) {
+            std::string ns = imp.alias.empty() ? imp.name : imp.alias;
+            for (const auto& name : imp.importNames) {
+                if (moduleFunctions_.count(ns) && moduleFunctions_[ns].count(name)) {
+                    functions_[name] = moduleFunctions_[ns][name];
+                } else if (moduleStructs_.count(ns) && moduleStructs_[ns].count(name)) {
+                    structs_[name] = moduleStructs_[ns][name];
+                } else {
+                    error("name '" + name + "' not found in module '" + ns + "'", imp.loc);
+                }
+            }
+        }
+    }
     for (const auto& s : program_->structs) {
         if (s.typeParams.empty()) analyzeStruct(s);
         else structTemplates_[s.name] = &s;
