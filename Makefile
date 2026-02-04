@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -I src
+CXXFLAGS = -std=c++17 -Wall -Wextra -I src -m64
 SRC = src/lexer.cpp src/ast.cpp src/parser.cpp src/semantic.cpp src/optimizer.cpp src/codegen.cpp src/main.cpp
 TARGET = gsc
 

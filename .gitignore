@@ -5,6 +5,12 @@ gsc.exe
 *.obj
 *.s
 *.out
+easy
+final_test
+test_features
+test_stdlib
+test_string
+test.txt
 build/
 .idea/
 .vs/

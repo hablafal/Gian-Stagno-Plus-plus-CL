@@ -24,7 +24,8 @@ struct FuncSymbol {
     std::vector<Type> paramTypes;
     const FuncDecl* decl = nullptr;
     bool isMethod = false;
-    std::unordered_map<std::string, VarSymbol> locals;  // name -> symbol (frame offset etc.)
+    bool isExtern = false;
+    std::unordered_map<std::string, VarSymbol> locals;
 };
 
 struct StructDef {
@@ -33,7 +34,7 @@ struct StructDef {
     std::vector<std::pair<std::string, Type>> members;
     std::unordered_map<std::string, size_t> memberIndex;
     std::unordered_map<std::string, FuncSymbol> methods;
-    size_t sizeBytes = 0;  // for codegen
+    size_t sizeBytes = 0;
 };
 
 class SemanticAnalyzer {

@@ -15,7 +15,7 @@ struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List, Dict };
     Kind kind = Kind::Int;
     std::string structName;  // for StructRef or TypeParam name
     std::string ns;          // for StructRef
@@ -31,9 +31,10 @@ struct Type {
 
 struct Expr {
     enum class Kind {
-        IntLit, FloatLit, BoolLit, StringLit, ListLit,
+        IntLit, FloatLit, BoolLit, StringLit, ListLit, DictLit,
         Var, Binary, Unary, Call, Member, Cast,
-        Deref, AddressOf, New, Delete, Index
+        Deref, AddressOf, New, Delete, Index, Slice, Ternary,
+        Comprehension
     };
     Kind kind = Kind::IntLit;
     Type exprType;
@@ -50,6 +51,7 @@ struct Expr {
     std::vector<std::unique_ptr<Expr>> args;
     std::string member;
     std::unique_ptr<Type> targetType;  // for Cast
+    std::unique_ptr<Expr> cond;      // for Ternary
 
     static std::unique_ptr<Expr> makeIntLit(int64_t v, SourceLoc loc);
     static std::unique_ptr<Expr> makeFloatLit(double v, SourceLoc loc);
@@ -60,33 +62,6 @@ struct Expr {
     static std::unique_ptr<Expr> makeUnary(const std::string& op, std::unique_ptr<Expr> operand, SourceLoc loc);
     static std::unique_ptr<Expr> makeCall(const std::string& id, std::vector<std::unique_ptr<Expr>> args, SourceLoc loc);
     static std::unique_ptr<Expr> makeMember(std::unique_ptr<Expr> base, const std::string& member, SourceLoc loc);
-};
-
-struct Stmt {
-    enum class Kind {
-        Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
-        Unsafe, Asm, Repeat, RangeFor
-    };
-    Kind kind = Kind::Block;
-    SourceLoc loc;
-
-    std::vector<std::unique_ptr<Stmt>> blockStmts;
-    std::string varName;
-    Type varType;
-    std::unique_ptr<Expr> varInit;
-    std::unique_ptr<Expr> assignTarget;  // or for expr in For
-    std::unique_ptr<Expr> assignValue;
-    std::unique_ptr<Expr> condition;
-    std::unique_ptr<Stmt> thenBranch;
-    std::unique_ptr<Stmt> elseBranch;
-    std::unique_ptr<Stmt> body;
-    std::unique_ptr<Stmt> initStmt;
-    std::unique_ptr<Stmt> stepStmt;
-    std::unique_ptr<Expr> startExpr; // for RangeFor
-    std::unique_ptr<Expr> endExpr;   // for RangeFor
-    std::unique_ptr<Expr> returnExpr;
-    std::unique_ptr<Expr> expr;
-    std::string asmCode; // for Asm
 };
 
 struct FuncParam {
@@ -104,6 +79,34 @@ struct FuncDecl {
     SourceLoc loc;
     bool isExtern = false;
     std::string externLib; // e.g. "C"
+};
+
+struct Stmt {
+    enum class Kind {
+        Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
+        Unsafe, Asm, Repeat, RangeFor, ForEach, Switch, Case, Defer
+    };
+    Kind kind = Kind::Block;
+    SourceLoc loc;
+
+    std::vector<std::unique_ptr<Stmt>> blockStmts;
+    std::string varName;
+    Type varType;
+    std::unique_ptr<Expr> varInit;
+    std::unique_ptr<Expr> assignTarget;
+    std::unique_ptr<Expr> assignValue;
+    std::unique_ptr<Expr> condition;
+    std::unique_ptr<Stmt> thenBranch;
+    std::unique_ptr<Stmt> elseBranch;
+    std::unique_ptr<Stmt> body;
+    std::unique_ptr<Stmt> initStmt;
+    std::unique_ptr<Stmt> stepStmt;
+    std::unique_ptr<Expr> startExpr; // for RangeFor
+    std::unique_ptr<Expr> endExpr;   // for RangeFor
+    bool isInclusive = false;        // for RangeFor
+    std::unique_ptr<Expr> returnExpr;
+    std::unique_ptr<Expr> expr;
+    std::string asmCode; // for Asm
 };
 
 struct StructMember {

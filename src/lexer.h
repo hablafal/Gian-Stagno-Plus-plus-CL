@@ -16,17 +16,19 @@ enum class TokenKind {
     Ident,
     StringLit,
     // Keywords — Python-style + C++ power
-    Var, Let, Func, Def, Class, Struct, Return,
-    If, Else, Elif, While, For, In, Repeat,
-    Int, Float, Bool, String, Char, True, False, And, Or, Not,
-    Import, Asm, Unsafe, New, Delete, Extern,
+    Var, Let, Func, Def, Fn, Class, Struct, Data, Return,
+    If, Else, Elif, Then, While, For, In, Repeat, Loop, As,
+    Check, Case, Defer,
+    Int, Float, Decimal, Bool, String, Text, Arr, Char, True, False, Yes, No, On, Off, And, Or, Not,
+    Import, Use, Asm, Unsafe, New, Delete, Extern, Nil,
     // Punctuation
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semicolon, Comma, Colon, Arrow,
     Assign, Amp,
     Plus, Minus, Star, Slash, Percent,
     Eq, Ne, Lt, Gt, Le, Ge,
-    Dot, DotDot
+    Dot, DotDot, DotDotDot,
+    Indent, Dedent, Newline
 };
 
 struct Token {
@@ -59,6 +61,10 @@ private:
     Token lex();
 
     std::string source_;
+    std::vector<int> indentStack_ = {0};
+    int pendingDedents_ = 0;
+    bool atLineStart_ = true;
+    int nestingLevel_ = 0;
     std::string filename_;
     size_t pos_ = 0;
     int line_ = 1;

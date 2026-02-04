@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
     std::string sourcePath = argv[1];
     std::string outPath;
     bool emitAsmOnly = false;
-    bool use64Bit = false;
+    bool use64Bit = true;
     bool debugMode = false;
     bool releaseMode = false;
     for (int i = 2; i < argc; i++) {
