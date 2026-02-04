@@ -29,8 +29,12 @@ int CodeGenerator::getFrameSize() {
     if (use32Bit_) {
         n = (n + 15) & ~15;  // align to 16 for cdecl
     } else {
+        // x64: Initial RSP is 16-aligned.
+        // call pushes 8 bytes. push rbp pushes 8 bytes.
+        // So RSP is 16-aligned again.
+        // We must subtract a multiple of 16 to keep it 16-aligned.
         n = (n + 15) & ~15;
-        if (n < 32) n = 32;  // shadow space for Windows x64
+        if (n < 32) n = 32; // shadow space for Windows x64
     }
     return n;
 }
@@ -246,13 +250,35 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             break;
         case Expr::Kind::Call: {
             std::string funcName = expr->ident;
-            if (expr->ns.empty()) {
-                if (funcName == "print" && !expr->args.empty()) {
-                    if (expr->args[0]->exprType.kind == Type::Kind::String) funcName = "print_string";
+            if (expr->ns.empty() && (funcName == "print" || funcName == "println")) {
+                for (size_t i = 0; i < expr->args.size(); i++) {
+                    std::string subFunc = funcName;
+                    if (expr->args[i]->exprType.kind == Type::Kind::String) subFunc += "_string";
+                    else if (expr->args[i]->exprType.kind == Type::Kind::Float) subFunc += "_float";
+
+                    if (i < expr->args.size() - 1 && subFunc == "println") subFunc = "print";
+                    if (i < expr->args.size() - 1 && subFunc == "println_string") subFunc = "print_string";
+                    if (i < expr->args.size() - 1 && subFunc == "println_float") subFunc = "print_float";
+
+                    FuncSymbol* fs = resolveFunc(subFunc, "");
+                    if (fs) {
+                        if (use32Bit_) {
+                            emitExprToRax(expr->args[i].get());
+                            *out_ << "\tpushl\t%eax\n\tcall\t" << fs->mangledName << "\n\taddl\t$4, %esp\n";
+                        } else {
+                            if (isLinux_) {
+                                if (expr->args[i]->exprType.kind == Type::Kind::Float) emitExpr(expr->args[i].get(), "xmm0", true);
+                                else emitExpr(expr->args[i].get(), "rdi", false);
+                                *out_ << "\tcall\t" << fs->mangledName << "\n";
+                            } else {
+                                if (expr->args[i]->exprType.kind == Type::Kind::Float) emitExpr(expr->args[i].get(), "xmm0", true);
+                                else emitExpr(expr->args[i].get(), "rcx", false);
+                                *out_ << "\tsubq\t$32, %rsp\n\tcall\t" << fs->mangledName << "\n\taddq\t$32, %rsp\n";
+                            }
+                        }
+                    }
                 }
-                if (funcName == "println" && !expr->args.empty()) {
-                    if (expr->args[0]->exprType.kind == Type::Kind::String) funcName = "println_string";
-                }
+                return;
             }
             FuncSymbol* fs = resolveFunc(funcName, expr->ns);
             if (!fs) { error("unknown function " + expr->ident, expr->loc); return; }
@@ -495,6 +521,56 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
         case Stmt::Kind::Unsafe:
             emitStmt(stmt->body.get());
             break;
+        case Stmt::Kind::Repeat: {
+            std::string condLabel = nextLabel();
+            std::string bodyLabel = nextLabel();
+            std::string endLabel = nextLabel();
+
+            // We need a counter. For simplicity, let's use a hidden local or just push/pop
+            emitExprToRax(stmt->condition.get());
+            *out_ << (use32Bit_ ? "\tpushl\t%eax\n" : "\tpushq\t%rax\n");
+
+            *out_ << condLabel << ":\n";
+            *out_ << (use32Bit_ ? "\tmovl\t(%esp), %eax\n" : "\tmovq\t(%rsp), %rax\n");
+            *out_ << (use32Bit_ ? "\ttestl\t%eax, %eax\n" : "\ttestq\t%rax, %rax\n");
+            *out_ << "\tjle\t" << endLabel << "\n";
+
+            emitStmt(stmt->body.get());
+
+            *out_ << (use32Bit_ ? "\tdecl\t(%esp)\n" : "\tdecq\t(%rsp)\n");
+            *out_ << "\tjmp\t" << condLabel << "\n";
+            *out_ << endLabel << ":\n";
+            *out_ << (use32Bit_ ? "\taddl\t$4, %esp\n" : "\taddq\t$8, %rsp\n");
+            break;
+        }
+        case Stmt::Kind::RangeFor: {
+            std::string condLabel = nextLabel();
+            std::string bodyLabel = nextLabel();
+            std::string stepLabel = nextLabel();
+
+            // Initialize var with startExpr
+            emitExprToRax(stmt->startExpr.get());
+            std::string loc = getVarLocation(stmt->varName);
+            if (!loc.empty()) *out_ << "\t" << (use32Bit_ ? "movl\t%eax, " : "movq\t%rax, ") << loc << "\n";
+
+            *out_ << "\tjmp\t" << condLabel << "\n";
+            *out_ << bodyLabel << ":\n";
+            emitStmt(stmt->body.get());
+
+            *out_ << stepLabel << ":\n";
+            // Increment var
+            if (!loc.empty()) *out_ << "\t" << (use32Bit_ ? "incl\t" : "incq\t") << loc << "\n";
+
+            *out_ << condLabel << ":\n";
+            // Check var < endExpr
+            emitExprToRax(stmt->endExpr.get());
+            *out_ << (use32Bit_ ? "\tpushl\t%eax\n" : "\tpushq\t%rax\n");
+            if (!loc.empty()) *out_ << "\t" << (use32Bit_ ? "movl\t" : "movq\t") << loc << ", %rax\n";
+            *out_ << (use32Bit_ ? "\tpopl\t%ecx\n" : "\tpopq\t%rcx\n");
+            *out_ << (use32Bit_ ? "\tcmpl\t%ecx, %eax\n" : "\tcmpq\t%rcx, %rax\n");
+            *out_ << "\tjl\t" << bodyLabel << "\n";
+            break;
+        }
         case Stmt::Kind::Asm:
             *out_ << "\t" << stmt->asmCode << "\n";
             break;
@@ -504,7 +580,8 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
 void CodeGenerator::emitFunc(const FuncSymbol& fs) {
     if (fs.decl && fs.decl->isExtern) return;
     if (fs.mangledName == "println" || fs.mangledName == "print" || fs.mangledName == "print_float" ||
-        fs.mangledName == "println_float" || fs.mangledName == "print_string" || fs.mangledName == "println_string") return;
+        fs.mangledName == "println_float" || fs.mangledName == "print_string" || fs.mangledName == "println_string" ||
+        fs.mangledName == "gspp_input" || fs.mangledName == "gspp_read_file" || fs.mangledName == "gspp_write_file") return;
 
     currentFunc_ = fs.decl;
     currentVars_ = fs.locals;
@@ -591,6 +668,52 @@ void CodeGenerator::emitProgramBody() {
         *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n\tsubl\t$8, %esp\n\tmovd\t8(%ebp), %xmm0\n\tmovd\t%xmm0, (%esp)\n\tpushl\t$.LC_fmt_f_nl\n\tcall\t_printf\n\taddl\t$12, %esp\n\tleave\n\tret\n";
         *out_ << "\t.globl\tprint_float\nprint_float:\n";
         *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n\tsubl\t$8, %esp\n\tmovd\t8(%ebp), %xmm0\n\tmovd\t%xmm0, (%esp)\n\tpushl\t$.LC_fmt_f\n\tcall\t_printf\n\taddl\t$12, %esp\n\tleave\n\tret\n\n";
+
+        *out_ << "\t.globl\tprint_string\nprint_string:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n";
+        *out_ << "\tpushl\t8(%ebp)\n\tpushl\t$.LC_fmt_s\n\tcall\t_printf\n\taddl\t$8, %esp\n\tleave\n\tret\n";
+        *out_ << "\t.globl\tprintln_string\nprintln_string:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n";
+        *out_ << "\tpushl\t8(%ebp)\n\tpushl\t$.LC_fmt_s_nl\n\tcall\t_printf\n\taddl\t$8, %esp\n\tleave\n\tret\n";
+
+        *out_ << "\t.globl\t_gspp_strcat\n_gspp_strcat:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n\tsubl\t$8, %esp\n\tpushl\t%ebx\n\tpushl\t%edi\n";
+        *out_ << "\tpushl\t12(%ebp)\n\tcall\t_strlen\n\taddl\t$4, %esp\n\tmovl\t%eax, %ebx\n";
+        *out_ << "\tpushl\t8(%ebp)\n\tcall\t_strlen\n\taddl\t$4, %esp\n\taddl\t%ebx, %eax\n\tincl\t%eax\n";
+        *out_ << "\tpushl\t%eax\n\tcall\tmalloc\n\taddl\t$4, %esp\n\tmovl\t%eax, %edi\n";
+        *out_ << "\tpushl\t8(%ebp)\n\tpushl\t%edi\n\tcall\t_strcpy\n\taddl\t$8, %esp\n";
+        *out_ << "\tpushl\t12(%ebp)\n\tpushl\t%edi\n\tcall\t_strcat\n\taddl\t$8, %esp\n";
+        *out_ << "\tmovl\t%edi, %eax\n\tpopl\t%edi\n\tpopl\t%ebx\n\tleave\n\tret\n\n";
+
+        *out_ << "\t.extern\t_scanf\n";
+        *out_ << "\t.globl\tgspp_input\ngspp_input:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n";
+        *out_ << "\tpushl\t$256\n\tcall\tmalloc\n\taddl\t$4, %esp\n";
+        *out_ << "\tpushl\t%eax\n\tpushl\t$.LC_fmt_s\n\tcall\t_scanf\n\taddl\t$4, %esp\n\tpopl\t%eax\n\tleave\n\tret\n\n";
+
+        *out_ << "\t.extern\t_fopen\n\t.extern\t_fseek\n\t.extern\t_ftell\n\t.extern\t_rewind\n\t.extern\t_fread\n\t.extern\t_fclose\n";
+        *out_ << "\t.globl\tgspp_read_file\ngspp_read_file:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n\tsubl\t$16, %esp\n";
+        *out_ << "\tpushl\t$.LC_mode_r\n\tpushl\t8(%ebp)\n\tcall\t_fopen\n\taddl\t$8, %esp\n";
+        *out_ << "\ttestl\t%eax, %eax\n\tje\t.LRF_err32\n";
+        *out_ << "\tmovl\t%eax, -4(%ebp)\n";
+        *out_ << "\tpushl\t$2\n\tpushl\t$0\n\tpushl\t-4(%ebp)\n\tcall\t_fseek\n\taddl\t$12, %esp\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tcall\t_ftell\n\taddl\t$4, %esp\n\tmovl\t%eax, -8(%ebp)\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tcall\t_rewind\n\taddl\t$4, %esp\n";
+        *out_ << "\tmovl\t-8(%ebp), %eax\n\tincl\t%eax\n\tpushl\t%eax\n\tcall\tmalloc\n\taddl\t$4, %esp\n\tmovl\t%eax, -12(%ebp)\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tpushl\t-8(%ebp)\n\tpushl\t$1\n\tpushl\t-12(%ebp)\n\tcall\t_fread\n\taddl\t$16, %esp\n";
+        *out_ << "\tmovl\t-12(%ebp), %edx\n\taddl\t-8(%ebp), %edx\n\tmovb\t$0, (%edx)\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tcall\t_fclose\n\taddl\t$4, %esp\n";
+        *out_ << "\tmovl\t-12(%ebp), %eax\n\tjmp\t.LRF_end32\n.LRF_err32:\n\tmovl\t$0, %eax\n.LRF_end32:\n\tleave\n\tret\n\n";
+
+        *out_ << "\t.extern\t_fputs\n";
+        *out_ << "\t.globl\tgspp_write_file\ngspp_write_file:\n";
+        *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n\tsubl\t$8, %esp\n";
+        *out_ << "\tpushl\t$.LC_mode_w\n\tpushl\t8(%ebp)\n\tcall\t_fopen\n\taddl\t$8, %esp\n";
+        *out_ << "\ttestl\t%eax, %eax\n\tje\t.LWF_end32\n";
+        *out_ << "\tmovl\t%eax, -4(%ebp)\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tpushl\t12(%ebp)\n\tcall\t_fputs\n\taddl\t$8, %esp\n";
+        *out_ << "\tpushl\t-4(%ebp)\n\tcall\t_fclose\n\taddl\t$4, %esp\n.LWF_end32:\n\tleave\n\tret\n\n";
     } else {
         *out_ << "\t.extern\tprintf\n";
         *out_ << "\t.extern\tstrlen\n";
@@ -620,14 +743,44 @@ void CodeGenerator::emitProgramBody() {
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n";
             *out_ << "\tmovq\t%rdi, %rsi\n\tleaq\t.LC_fmt_s(%rip), %rdi\n\tmovl\t$0, %eax\n\tcall\tprintf\n\tpopq\t%rbp\n\tret\n";
             *out_ << "\t.globl\t_gspp_strcat\n_gspp_strcat:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n";
+            *out_ << "\tcall\tstrlen\n\tmovq\t%rax, -24(%rbp)\n";
+            *out_ << "\tmovq\t-16(%rbp), %rdi\n\tcall\tstrlen\n\taddq\t-24(%rbp), %rax\n\tincq\t%rax\n";
+            *out_ << "\tmovq\t%rax, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -32(%rbp)\n";
+            *out_ << "\tmovq\t-32(%rbp), %rdi\n\tmovq\t-8(%rbp), %rsi\n\tcall\tstrcpy\n";
+            *out_ << "\tmovq\t-32(%rbp), %rdi\n\tmovq\t-16(%rbp), %rsi\n\tcall\tstrcat\n";
+            *out_ << "\tmovq\t-32(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\tscanf\n";
+            *out_ << "\t.globl\tgspp_input\ngspp_input:\n";
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
-            *out_ << "\tmovq\t%rdi, 16(%rbp)\n\tmovq\t%rsi, 24(%rbp)\n";
-            *out_ << "\tcall\tstrlen\n\tmovq\t%rax, %rbx\n";
-            *out_ << "\tmovq\t24(%rbp), %rdi\n\tcall\tstrlen\n\taddq\t%rbx, %rax\n\tincq\t%rax\n";
-            *out_ << "\tmovq\t%rax, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, %r10\n";
-            *out_ << "\tmovq\t%r10, %rdi\n\tmovq\t16(%rbp), %rsi\n\tcall\tstrcpy\n";
-            *out_ << "\tmovq\t%r10, %rdi\n\tmovq\t24(%rbp), %rsi\n\tcall\tstrcat\n";
-            *out_ << "\tmovq\t%r10, %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+            *out_ << "\tmovq\t$256, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n";
+            *out_ << "\tleaq\t.LC_fmt_s(%rip), %rdi\n\tmovq\t-8(%rbp), %rsi\n\tmovl\t$0, %eax\n\tcall\tscanf\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\tfopen\n\t.extern\tfseek\n\t.extern\tftell\n\t.extern\trewind\n\t.extern\tfread\n\t.extern\tfclose\n";
+            *out_ << ".LC_mode_r:\n\t.string \"r\"\n";
+            *out_ << "\t.globl\tgspp_read_file\ngspp_read_file:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tleaq\t.LC_mode_r(%rip), %rsi\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LRF_err\n";
+            *out_ << "\tmovq\t%rax, -8(%rbp)\n\tmovq\t%rax, %rdi\n\tmovl\t$0, %esi\n\tmovl\t$2, %edx\n\tcall\tfseek\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdi\n\tcall\tftell\n\tmovq\t%rax, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdi\n\tcall\trewind\n";
+            *out_ << "\tmovq\t-16(%rbp), %rdi\n\tincq\t%rdi\n\tcall\tmalloc\n\tmovq\t%rax, -24(%rbp)\n";
+            *out_ << "\tmovq\t-24(%rbp), %rdi\n\tmovl\t$1, %esi\n\tmovq\t-16(%rbp), %rdx\n\tmovq\t-8(%rbp), %rcx\n\tcall\tfread\n";
+            *out_ << "\tmovq\t-24(%rbp), %rdx\n\taddq\t-16(%rbp), %rdx\n\tmovb\t$0, (%rdx)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdi\n\tcall\tfclose\n";
+            *out_ << "\tmovq\t-24(%rbp), %rax\n\tjmp\t.LRF_end\n.LRF_err:\n\tmovq\t$0, %rax\n.LRF_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << ".LC_mode_w:\n\t.string \"w\"\n";
+            *out_ << "\t.extern\tfputs\n";
+            *out_ << "\t.globl\tgspp_write_file\ngspp_write_file:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdi\n\tleaq\t.LC_mode_w(%rip), %rsi\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LWF_end\n";
+            *out_ << "\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rdi\n\tmovq\t-24(%rbp), %rsi\n\tcall\tfputs\n";
+            *out_ << "\tmovq\t-24(%rbp), %rdi\n\tcall\tfclose\n.LWF_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
         } else {
             *out_ << "\t.globl\tprintln\nprintln:\n";
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
@@ -649,6 +802,46 @@ void CodeGenerator::emitProgramBody() {
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
             *out_ << "\tmovq\t%rcx, %rdx\n\tleaq\t.LC_fmt_s(%rip), %rcx\n\tcall\tprintf\n";
             *out_ << "\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.globl\t_gspp_strcat\n_gspp_strcat:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tmovq\t%rcx, -8(%rbp)\n\tmovq\t%rdx, -16(%rbp)\n";
+            *out_ << "\tcall\tstrlen\n\tmovq\t%rax, -24(%rbp)\n";
+            *out_ << "\tmovq\t-16(%rbp), %rcx\n\tcall\tstrlen\n\taddq\t-24(%rbp), %rax\n\tincq\t%rax\n";
+            *out_ << "\tmovq\t%rax, %rcx\n\tcall\tmalloc\n\tmovq\t%rax, -32(%rbp)\n";
+            *out_ << "\tmovq\t-32(%rbp), %rcx\n\tmovq\t-8(%rbp), %rdx\n\tcall\tstrcpy\n";
+            *out_ << "\tmovq\t-32(%rbp), %rcx\n\tmovq\t-16(%rbp), %rdx\n\tcall\tstrcat\n";
+            *out_ << "\tmovq\t-32(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\tscanf\n";
+            *out_ << "\t.globl\tgspp_input\ngspp_input:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tmovq\t$256, %rcx\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n";
+            *out_ << "\tleaq\t.LC_fmt_s(%rip), %rcx\n\tmovq\t-8(%rbp), %rdx\n\tcall\tscanf\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\tfopen\n\t.extern\tfseek\n\t.extern\tftell\n\t.extern\trewind\n\t.extern\tfread\n\t.extern\tfclose\n";
+            *out_ << ".LC_mode_r:\n\t.string \"r\"\n";
+            *out_ << "\t.globl\tgspp_read_file\ngspp_read_file:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$64, %rsp\n";
+            *out_ << "\tleaq\t.LC_mode_r(%rip), %rdx\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LRF_err_win\n";
+            *out_ << "\tmovq\t%rax, -8(%rbp)\n\tmovq\t%rax, %rcx\n\tmovl\t$0, %edx\n\tmovl\t$2, %r8d\n\tcall\tfseek\n";
+            *out_ << "\tmovq\t-8(%rbp), %rcx\n\tcall\tftell\n\tmovq\t%rax, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rcx\n\tcall\trewind\n";
+            *out_ << "\tmovq\t-16(%rbp), %rcx\n\tincq\t%rcx\n\tcall\tmalloc\n\tmovq\t%rax, -24(%rbp)\n";
+            *out_ << "\tmovq\t-24(%rbp), %rcx\n\tmovl\t$1, %edx\n\tmovq\t-16(%rbp), %r8\n\tmovq\t-8(%rbp), %r9\n\tcall\tfread\n";
+            *out_ << "\tmovq\t-24(%rbp), %rdx\n\taddq\t-16(%rbp), %rdx\n\tmovb\t$0, (%rdx)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rcx\n\tcall\tfclose\n";
+            *out_ << "\tmovq\t-24(%rbp), %rax\n\tjmp\t.LRF_end_win\n.LRF_err_win:\n\tmovq\t$0, %rax\n.LRF_end_win:\n\taddq\t$64, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << ".LC_mode_w:\n\t.string \"w\"\n";
+            *out_ << "\t.extern\tfputs\n";
+            *out_ << "\t.globl\tgspp_write_file\ngspp_write_file:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$48, %rsp\n";
+            *out_ << "\tmovq\t%rcx, -8(%rbp)\n\tmovq\t%rdx, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rcx\n\tleaq\t.LC_mode_w(%rip), %rdx\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LWF_end_win\n";
+            *out_ << "\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rcx\n\tmovq\t-24(%rbp), %rdx\n\tcall\tfputs\n";
+            *out_ << "\tmovq\t-24(%rbp), %rcx\n\tcall\tfclose\n.LWF_end_win:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
         }
     }
     for (const auto& pair : semantic_->functions())

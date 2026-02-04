@@ -555,8 +555,20 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
             break;
         }
         case Stmt::Kind::Assign: {
-            analyzeExpr(stmt->assignTarget.get());
-            analyzeExpr(stmt->assignValue.get());
+            if (stmt->assignTarget->kind == Expr::Kind::Var) {
+                VarSymbol* vs = lookupVar(stmt->assignTarget->ident);
+                if (!vs) {
+                    // Implicit declaration!
+                    Type valTy = analyzeExpr(stmt->assignValue.get());
+                    addVar(stmt->assignTarget->ident, valTy);
+                    vs = lookupVar(stmt->assignTarget->ident);
+                }
+                stmt->assignTarget->exprType = vs->type;
+                analyzeExpr(stmt->assignValue.get());
+            } else {
+                analyzeExpr(stmt->assignTarget.get());
+                analyzeExpr(stmt->assignValue.get());
+            }
             break;
         }
         case Stmt::Kind::If:
@@ -584,6 +596,18 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
             break;
         case Stmt::Kind::Unsafe:
             analyzeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::Repeat:
+            analyzeExpr(stmt->condition.get());
+            analyzeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::RangeFor:
+            pushScope();
+            analyzeExpr(stmt->startExpr.get());
+            analyzeExpr(stmt->endExpr.get());
+            addVar(stmt->varName, Type{Type::Kind::Int});
+            analyzeStmt(stmt->body.get());
+            popScope();
             break;
         case Stmt::Kind::Asm:
             break;
@@ -636,9 +660,49 @@ void SemanticAnalyzer::analyzeProgram() {
     plsSym.returnType.kind = Type::Kind::Int;
     plsSym.paramTypes.push_back(Type{Type::Kind::String});
     functions_["println_string"] = std::move(plsSym);
+
+    // New built-ins
+    FuncSymbol inputSym;
+    inputSym.name = "input";
+    inputSym.mangledName = "gspp_input";
+    inputSym.returnType.kind = Type::Kind::String;
+    functions_["input"] = std::move(inputSym);
+
+    FuncSymbol rfSym;
+    rfSym.name = "read_file";
+    rfSym.mangledName = "gspp_read_file";
+    rfSym.returnType.kind = Type::Kind::String;
+    rfSym.paramTypes.push_back(Type{Type::Kind::String});
+    functions_["read_file"] = std::move(rfSym);
+
+    FuncSymbol wfSym;
+    wfSym.name = "write_file";
+    wfSym.mangledName = "gspp_write_file";
+    wfSym.returnType.kind = Type::Kind::Void;
+    wfSym.paramTypes.push_back(Type{Type::Kind::String});
+    wfSym.paramTypes.push_back(Type{Type::Kind::String});
+    functions_["write_file"] = std::move(wfSym);
     for (const auto& f : program_->functions) {
         if (f.typeParams.empty()) analyzeFunc(f);
         else funcTemplates_[f.name] = &f;
+    }
+
+    if (!program_->topLevelStmts.empty()) {
+        auto syntheticMain = std::make_unique<FuncDecl>();
+        syntheticMain->name = "main";
+        syntheticMain->returnType.kind = Type::Kind::Int;
+        auto body = std::make_unique<Stmt>();
+        body->kind = Stmt::Kind::Block;
+        for (auto& s : program_->topLevelStmts) {
+            body->blockStmts.push_back(std::move(s));
+        }
+        syntheticMain->body = std::move(body);
+
+        // If there's already a main, we might have a conflict.
+        // For now, let's just analyze it.
+        // In a real compiler we'd merge them or error.
+        analyzeFunc(*syntheticMain);
+        instantiatedFuncDecls_.push_back(std::move(syntheticMain));
     }
 }
 

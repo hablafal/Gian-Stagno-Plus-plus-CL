@@ -65,7 +65,7 @@ struct Expr {
 struct Stmt {
     enum class Kind {
         Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
-        Unsafe, Asm
+        Unsafe, Asm, Repeat, RangeFor
     };
     Kind kind = Kind::Block;
     SourceLoc loc;
@@ -82,6 +82,8 @@ struct Stmt {
     std::unique_ptr<Stmt> body;
     std::unique_ptr<Stmt> initStmt;
     std::unique_ptr<Stmt> stepStmt;
+    std::unique_ptr<Expr> startExpr; // for RangeFor
+    std::unique_ptr<Expr> endExpr;   // for RangeFor
     std::unique_ptr<Expr> returnExpr;
     std::unique_ptr<Expr> expr;
     std::string asmCode; // for Asm
@@ -127,6 +129,7 @@ struct Program {
     std::vector<Import> imports;
     std::vector<StructDecl> structs;
     std::vector<FuncDecl> functions;
+    std::vector<std::unique_ptr<Stmt>> topLevelStmts;
     SourceLoc loc;
 };
 

@@ -118,6 +118,7 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "while") t.kind = TokenKind::While;
     else if (id == "for") t.kind = TokenKind::For;
     else if (id == "in") t.kind = TokenKind::In;
+    else if (id == "repeat") t.kind = TokenKind::Repeat;
     else if (id == "return") t.kind = TokenKind::Return;
     else if (id == "int") t.kind = TokenKind::Int;
     else if (id == "float") t.kind = TokenKind::Float;
@@ -163,7 +164,10 @@ Token Lexer::lex() {
         case ',': t.kind = TokenKind::Comma; break;
         case ':': t.kind = TokenKind::Colon; break;
         case '&': t.kind = TokenKind::Amp; break;
-        case '.': t.kind = TokenKind::Dot; break;
+        case '.':
+            if (cur() == '.') { advance(); t.kind = TokenKind::DotDot; }
+            else t.kind = TokenKind::Dot;
+            break;
         case '+': t.kind = TokenKind::Plus; break;
         case '-':
             if (cur() == '>') { advance(); t.kind = TokenKind::Arrow; }
