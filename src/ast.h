@@ -15,7 +15,7 @@ struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List };
     Kind kind = Kind::Int;
     std::string structName;  // for StructRef or TypeParam name
     std::string ns;          // for StructRef
@@ -31,9 +31,9 @@ struct Type {
 
 struct Expr {
     enum class Kind {
-        IntLit, FloatLit, BoolLit, StringLit,
+        IntLit, FloatLit, BoolLit, StringLit, ListLit,
         Var, Binary, Unary, Call, Member, Cast,
-        Deref, AddressOf, New, Delete
+        Deref, AddressOf, New, Delete, Index
     };
     Kind kind = Kind::IntLit;
     Type exprType;
@@ -65,7 +65,7 @@ struct Expr {
 struct Stmt {
     enum class Kind {
         Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
-        Unsafe, Asm
+        Unsafe, Asm, Repeat, RangeFor
     };
     Kind kind = Kind::Block;
     SourceLoc loc;
@@ -82,22 +82,11 @@ struct Stmt {
     std::unique_ptr<Stmt> body;
     std::unique_ptr<Stmt> initStmt;
     std::unique_ptr<Stmt> stepStmt;
+    std::unique_ptr<Expr> startExpr; // for RangeFor
+    std::unique_ptr<Expr> endExpr;   // for RangeFor
     std::unique_ptr<Expr> returnExpr;
     std::unique_ptr<Expr> expr;
     std::string asmCode; // for Asm
-};
-
-struct StructMember {
-    std::string name;
-    Type type;
-    SourceLoc loc;
-};
-
-struct StructDecl {
-    std::string name;
-    std::vector<std::string> typeParams;
-    std::vector<StructMember> members;
-    SourceLoc loc;
 };
 
 struct FuncParam {
@@ -117,6 +106,20 @@ struct FuncDecl {
     std::string externLib; // e.g. "C"
 };
 
+struct StructMember {
+    std::string name;
+    Type type;
+    SourceLoc loc;
+};
+
+struct StructDecl {
+    std::string name;
+    std::vector<std::string> typeParams;
+    std::vector<StructMember> members;
+    std::vector<FuncDecl> methods;
+    SourceLoc loc;
+};
+
 struct Import {
     std::string name; // namespace name
     std::string path; // file path
@@ -127,6 +130,7 @@ struct Program {
     std::vector<Import> imports;
     std::vector<StructDecl> structs;
     std::vector<FuncDecl> functions;
+    std::vector<std::unique_ptr<Stmt>> topLevelStmts;
     SourceLoc loc;
 };
 

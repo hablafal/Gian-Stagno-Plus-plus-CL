@@ -9,14 +9,6 @@
 
 namespace gspp {
 
-struct StructDef {
-    std::string name;
-    std::string mangledName;
-    std::vector<std::pair<std::string, Type>> members;
-    std::unordered_map<std::string, size_t> memberIndex;
-    size_t sizeBytes = 0;  // for codegen
-};
-
 struct VarSymbol {
     std::string name;
     Type type;
@@ -31,7 +23,17 @@ struct FuncSymbol {
     Type returnType;
     std::vector<Type> paramTypes;
     const FuncDecl* decl = nullptr;
+    bool isMethod = false;
     std::unordered_map<std::string, VarSymbol> locals;  // name -> symbol (frame offset etc.)
+};
+
+struct StructDef {
+    std::string name;
+    std::string mangledName;
+    std::vector<std::pair<std::string, Type>> members;
+    std::unordered_map<std::string, size_t> memberIndex;
+    std::unordered_map<std::string, FuncSymbol> methods;
+    size_t sizeBytes = 0;  // for codegen
 };
 
 class SemanticAnalyzer {
@@ -49,6 +51,7 @@ public:
 private:
     void analyzeProgram();
     void analyzeStruct(const StructDecl& s);
+    void analyzeMethod(const std::string& structName, const FuncDecl& f);
     void analyzeFunc(const FuncDecl& f);
     void analyzeStmt(Stmt* stmt);
     Type analyzeExpr(Expr* expr);

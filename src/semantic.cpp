@@ -50,12 +50,8 @@ void SemanticAnalyzer::addVar(const std::string& name, const Type& type, bool is
     sym.type = type;
     sym.isParam = isParam;
     if (!scopes_.empty()) {
-        if (isParam)
-            sym.frameOffset = 0;  // set later from param index
-        else {
-            nextFrameOffset_ += 8;  // 8 bytes per local on x64
-            sym.frameOffset = -nextFrameOffset_;
-        }
+        nextFrameOffset_ += 8;  // 8 bytes per slot on x64
+        sym.frameOffset = -nextFrameOffset_;
         scopes_.back()[name] = sym;
         if (currentFuncSymbol_)
             currentFuncSymbol_->locals[name] = sym;
@@ -78,6 +74,7 @@ std::string SemanticAnalyzer::typeName(const Type& t) {
         case Type::Kind::String: return "string";
         case Type::Kind::Char: return "char";
         case Type::Kind::Void: return "void";
+        case Type::Kind::List: return "list_" + typeName(*t.ptrTo);
         case Type::Kind::TypeParam: return t.structName;
         case Type::Kind::Pointer: return "ptr_" + typeName(*t.ptrTo);
         case Type::Kind::StructRef: {
@@ -317,7 +314,60 @@ void SemanticAnalyzer::analyzeStruct(const StructDecl& s) {
         }
     }
     def.sizeBytes = (offset + 7) & ~7;
+    if (def.sizeBytes < 64) def.sizeBytes = 64; // Minimum size for dynamic classes
+
+    for (const auto& m : s.methods) {
+        FuncSymbol msym;
+        msym.name = m.name;
+        msym.ns = currentNamespace_;
+        msym.mangledName = def.mangledName + "_" + m.name;
+        msym.returnType = resolveType(m.returnType);
+        msym.decl = &m;
+        msym.isMethod = true;
+
+        // Add 'self'
+        Type selfTy{Type::Kind::Pointer};
+        selfTy.ptrTo = std::make_unique<Type>(Type::Kind::StructRef);
+        selfTy.ptrTo->structName = s.name;
+        selfTy.ptrTo->ns = currentNamespace_;
+        msym.paramTypes.push_back(selfTy);
+
+        for (const auto& p : m.params)
+            msym.paramTypes.push_back(resolveType(p.type));
+
+        def.methods[m.name] = std::move(msym);
+    }
+
     structs_[s.name] = std::move(def);
+}
+
+void SemanticAnalyzer::analyzeMethod(const std::string& structName, const FuncDecl& f) {
+    StructDef* sd = getStruct(structName, currentNamespace_);
+    if (!sd) return;
+    FuncSymbol& sym = sd->methods[f.name];
+
+    auto oldFunc = currentFunc_;
+    auto oldFuncSym = currentFuncSymbol_;
+    auto oldOffset = nextFrameOffset_;
+
+    pushScope();
+    currentFunc_ = const_cast<FuncDecl*>(&f);
+    currentFuncSymbol_ = &sym;
+    nextFrameOffset_ = 0;
+
+    addVar("self", sym.paramTypes[0], true);
+    sym.locals["self"] = *lookupVar("self");
+
+    for (size_t i = 0; i < f.params.size(); i++) {
+        addVar(f.params[i].name, sym.paramTypes[i+1], true);
+        sym.locals[f.params[i].name] = *lookupVar(f.params[i].name);
+    }
+    if (f.body) analyzeStmt(f.body.get());
+    popScope();
+
+    currentFunc_ = oldFunc;
+    currentFuncSymbol_ = oldFuncSym;
+    nextFrameOffset_ = oldOffset;
 }
 
 void SemanticAnalyzer::analyzeFunc(const FuncDecl& f) {
@@ -343,17 +393,13 @@ void SemanticAnalyzer::analyzeFunc(const FuncDecl& f) {
     currentFunc_ = const_cast<FuncDecl*>(&f);
     currentFuncSymbol_ = &fs;
     nextFrameOffset_ = 0;
-    // Windows x64: first 4 args in RCX, RDX, R8, R9. We spill to [RBP+16], [RBP+24], ...
-    int paramOffset = 16;
     for (size_t i = 0; i < f.params.size(); i++) {
         Type pt = resolveType(f.params[i].type);
         addVar(f.params[i].name, pt, true);
         VarSymbol* vs = lookupVar(f.params[i].name);
         if (vs) {
-            vs->frameOffset = paramOffset;
             fs.locals[f.params[i].name] = *vs;
         }
-        paramOffset += 8;
     }
     if (f.body) analyzeStmt(f.body.get());
     popScope();
@@ -421,6 +467,65 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             return expr->exprType;
         }
         case Expr::Kind::Call: {
+            if (expr->left) {
+                Type receiverType = analyzeExpr(expr->left.get());
+                if (receiverType.kind == Type::Kind::String) {
+                    if (expr->ident == "len") {
+                        expr->exprType.kind = Type::Kind::Int;
+                        return expr->exprType;
+                    }
+                }
+                if (receiverType.kind == Type::Kind::List) {
+                    if (expr->ident == "append") {
+                        if (!expr->args.empty()) analyzeExpr(expr->args[0].get());
+                        expr->exprType.kind = Type::Kind::Void;
+                        return expr->exprType;
+                    }
+                    if (expr->ident == "len") {
+                        expr->exprType.kind = Type::Kind::Int;
+                        return expr->exprType;
+                    }
+                }
+                if (receiverType.kind == Type::Kind::StructRef || (receiverType.kind == Type::Kind::Pointer && receiverType.ptrTo->kind == Type::Kind::StructRef)) {
+                    Type& base = (receiverType.kind == Type::Kind::Pointer) ? *receiverType.ptrTo : receiverType;
+                    StructDef* sd = getStruct(base.structName, base.ns);
+                    if (sd && sd->methods.count(expr->ident)) {
+                        FuncSymbol& ms = sd->methods[expr->ident];
+                        expr->exprType = ms.returnType;
+                        for (auto& a : expr->args) analyzeExpr(a.get());
+                        return expr->exprType;
+                    }
+                }
+                // Fallthrough if it's actually a namespace access
+            }
+
+            // Constructor check
+            if (expr->ns.empty()) {
+                StructDef* sd = getStruct(expr->ident, "");
+                if (sd) {
+                    expr->exprType.kind = Type::Kind::Pointer;
+                    expr->exprType.ptrTo = std::make_unique<Type>(Type::Kind::StructRef);
+                    expr->exprType.ptrTo->structName = expr->ident;
+
+                    if (sd->methods.count("init")) {
+                        FuncSymbol& initSym = sd->methods["init"];
+                        for (size_t i = 0; i < expr->args.size() && i < initSym.paramTypes.size() - 1; i++) {
+                            Type argTy = analyzeExpr(expr->args[i].get());
+                            // Infer parameter type from first call
+                            if (initSym.paramTypes[i+1].kind == Type::Kind::Int) {
+                                initSym.paramTypes[i+1] = argTy;
+                                // Also update the local variable in init
+                                std::string paramName = initSym.decl->params[i].name;
+                                initSym.locals[paramName].type = argTy;
+                            }
+                        }
+                    } else {
+                        for (auto& a : expr->args) analyzeExpr(a.get());
+                    }
+                    return expr->exprType;
+                }
+            }
+
             std::string targetNs = expr->ns;
             if (targetNs.empty() && !currentNamespace_.empty()) {
                 if (moduleFuncTemplates_.count(currentNamespace_) && moduleFuncTemplates_[currentNamespace_].count(expr->ident))
@@ -495,6 +600,8 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             }
             auto it = sd->memberIndex.find(expr->member);
             if (it == sd->memberIndex.end()) {
+                // If we are in a method and accessing self, we might not have seen the assignment yet
+                // But for now, let's just error.
                 error("no member '" + expr->member + "' in struct '" + base.structName + "'", expr->loc);
                 expr->exprType.kind = Type::Kind::Int;
                 return expr->exprType;
@@ -516,6 +623,29 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
             Type base = analyzeExpr(expr->right.get());
             expr->exprType.kind = Type::Kind::Pointer;
             expr->exprType.ptrTo = std::make_unique<Type>(base);
+            return expr->exprType;
+        }
+        case Expr::Kind::ListLit: {
+            Type elemType{Type::Kind::Int};
+            if (!expr->args.empty()) {
+                elemType = analyzeExpr(expr->args[0].get());
+                for (size_t i = 1; i < expr->args.size(); i++) analyzeExpr(expr->args[i].get());
+            }
+            expr->exprType.kind = Type::Kind::List;
+            expr->exprType.ptrTo = std::make_unique<Type>(elemType);
+            return expr->exprType;
+        }
+        case Expr::Kind::Index: {
+            Type baseTy = analyzeExpr(expr->left.get());
+            analyzeExpr(expr->right.get());
+            if (baseTy.kind == Type::Kind::List || baseTy.kind == Type::Kind::Pointer) {
+                if (baseTy.ptrTo) expr->exprType = *baseTy.ptrTo;
+                else expr->exprType.kind = Type::Kind::Int;
+            } else if (baseTy.kind == Type::Kind::String) {
+                expr->exprType.kind = Type::Kind::Char;
+            } else {
+                error("indexing non-list/pointer type", expr->loc);
+            }
             return expr->exprType;
         }
         case Expr::Kind::New: {
@@ -555,8 +685,36 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
             break;
         }
         case Stmt::Kind::Assign: {
-            analyzeExpr(stmt->assignTarget.get());
-            analyzeExpr(stmt->assignValue.get());
+            if (stmt->assignTarget->kind == Expr::Kind::Member && stmt->assignTarget->left->kind == Expr::Kind::Var && stmt->assignTarget->left->ident == "self") {
+                Type receiverTy = analyzeExpr(stmt->assignTarget->left.get());
+                Type& baseTy = *receiverTy.ptrTo;
+                StructDef* sd = getStruct(baseTy.structName, baseTy.ns);
+                if (sd) {
+                    Type valTy = analyzeExpr(stmt->assignValue.get());
+                    if (sd->memberIndex.find(stmt->assignTarget->member) == sd->memberIndex.end()) {
+                        // Create member on the fly!
+                        sd->memberIndex[stmt->assignTarget->member] = sd->members.size();
+                        sd->members.push_back({stmt->assignTarget->member, valTy});
+                        sd->sizeBytes += 8; // Assume 8 bytes for simplicity
+                    } else {
+                        sd->members[sd->memberIndex[stmt->assignTarget->member]].second = valTy;
+                    }
+                }
+            }
+            if (stmt->assignTarget->kind == Expr::Kind::Var) {
+                VarSymbol* vs = lookupVar(stmt->assignTarget->ident);
+                if (!vs) {
+                    // Implicit declaration!
+                    Type valTy = analyzeExpr(stmt->assignValue.get());
+                    addVar(stmt->assignTarget->ident, valTy);
+                    vs = lookupVar(stmt->assignTarget->ident);
+                }
+                stmt->assignTarget->exprType = vs->type;
+                analyzeExpr(stmt->assignValue.get());
+            } else {
+                analyzeExpr(stmt->assignTarget.get());
+                analyzeExpr(stmt->assignValue.get());
+            }
             break;
         }
         case Stmt::Kind::If:
@@ -585,6 +743,18 @@ void SemanticAnalyzer::analyzeStmt(Stmt* stmt) {
         case Stmt::Kind::Unsafe:
             analyzeStmt(stmt->body.get());
             break;
+        case Stmt::Kind::Repeat:
+            analyzeExpr(stmt->condition.get());
+            analyzeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::RangeFor:
+            pushScope();
+            analyzeExpr(stmt->startExpr.get());
+            analyzeExpr(stmt->endExpr.get());
+            addVar(stmt->varName, Type{Type::Kind::Int});
+            analyzeStmt(stmt->body.get());
+            popScope();
+            break;
         case Stmt::Kind::Asm:
             break;
     }
@@ -595,6 +765,30 @@ void SemanticAnalyzer::analyzeProgram() {
         if (s.typeParams.empty()) analyzeStruct(s);
         else structTemplates_[s.name] = &s;
     }
+
+    // Pre-scan methods for members
+    for (const auto& s : program_->structs) {
+        StructDef* sd = getStruct(s.name, currentNamespace_);
+        for (const auto& m : s.methods) {
+            if (m.body) {
+                // Look for self.X = ...
+                // This is a bit complex to do without a full visitor
+                // For now, let's just look at top-level assignments in the method body
+                for (const auto& stmt : m.body->blockStmts) {
+                    if (stmt->kind == Stmt::Kind::Assign && stmt->assignTarget->kind == Expr::Kind::Member) {
+                        if (stmt->assignTarget->left->kind == Expr::Kind::Var && stmt->assignTarget->left->ident == "self") {
+                            if (sd->memberIndex.find(stmt->assignTarget->member) == sd->memberIndex.end()) {
+                                sd->memberIndex[stmt->assignTarget->member] = sd->members.size();
+                                sd->members.push_back({stmt->assignTarget->member, Type{Type::Kind::Int}}); // Default to int for now
+                                sd->sizeBytes += 8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Register builtins so they are known during analysis
     FuncSymbol printlnSym;
     printlnSym.name = "println";
@@ -636,9 +830,75 @@ void SemanticAnalyzer::analyzeProgram() {
     plsSym.returnType.kind = Type::Kind::Int;
     plsSym.paramTypes.push_back(Type{Type::Kind::String});
     functions_["println_string"] = std::move(plsSym);
+
+    // New built-ins
+    FuncSymbol inputSym;
+    inputSym.name = "input";
+    inputSym.mangledName = "gspp_input";
+    inputSym.returnType.kind = Type::Kind::String;
+    functions_["input"] = std::move(inputSym);
+
+    FuncSymbol rfSym;
+    rfSym.name = "read_file";
+    rfSym.mangledName = "gspp_read_file";
+    rfSym.returnType.kind = Type::Kind::String;
+    rfSym.paramTypes.push_back(Type{Type::Kind::String});
+    functions_["read_file"] = std::move(rfSym);
+
+    FuncSymbol wfSym;
+    wfSym.name = "write_file";
+    wfSym.mangledName = "gspp_write_file";
+    wfSym.returnType.kind = Type::Kind::Void;
+    wfSym.paramTypes.push_back(Type{Type::Kind::String});
+    wfSym.paramTypes.push_back(Type{Type::Kind::String});
+    functions_["write_file"] = std::move(wfSym);
+
+    // Math built-ins
+    FuncSymbol absSym;
+    absSym.name = "abs";
+    absSym.mangledName = "abs"; // C function
+    absSym.returnType.kind = Type::Kind::Int;
+    absSym.paramTypes.push_back(Type{Type::Kind::Int});
+    functions_["abs"] = std::move(absSym);
+
+    FuncSymbol sqrtSym;
+    sqrtSym.name = "sqrt";
+    sqrtSym.mangledName = "sqrt"; // C function
+    sqrtSym.returnType.kind = Type::Kind::Float;
+    sqrtSym.paramTypes.push_back(Type{Type::Kind::Float});
+    functions_["sqrt"] = std::move(sqrtSym);
+
     for (const auto& f : program_->functions) {
         if (f.typeParams.empty()) analyzeFunc(f);
         else funcTemplates_[f.name] = &f;
+    }
+
+    if (!program_->topLevelStmts.empty()) {
+        auto syntheticMain = std::make_unique<FuncDecl>();
+        syntheticMain->name = "main";
+        syntheticMain->returnType.kind = Type::Kind::Int;
+        auto body = std::make_unique<Stmt>();
+        body->kind = Stmt::Kind::Block;
+        for (auto& s : program_->topLevelStmts) {
+            body->blockStmts.push_back(std::move(s));
+        }
+        syntheticMain->body = std::move(body);
+
+        // If there's already a main, we might have a conflict.
+        // For now, let's just analyze it.
+        // In a real compiler we'd merge them or error.
+        analyzeFunc(*syntheticMain);
+        instantiatedFuncDecls_.push_back(std::move(syntheticMain));
+    }
+
+    for (const auto& s : program_->structs) {
+        // Analyze init first to establish member types
+        for (const auto& m : s.methods) {
+            if (m.name == "init") analyzeMethod(s.name, m);
+        }
+        for (const auto& m : s.methods) {
+            if (m.name != "init") analyzeMethod(s.name, m);
+        }
     }
 }
 

@@ -113,6 +113,15 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
         case Stmt::Kind::Unsafe:
             optimizeStmt(stmt->body.get());
             break;
+        case Stmt::Kind::Repeat:
+            optimizeExpr(stmt->condition.get());
+            optimizeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::RangeFor:
+            optimizeExpr(stmt->startExpr.get());
+            optimizeExpr(stmt->endExpr.get());
+            optimizeStmt(stmt->body.get());
+            break;
         case Stmt::Kind::Asm:
             break;
     }
