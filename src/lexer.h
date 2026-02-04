@@ -17,7 +17,7 @@ enum class TokenKind {
     StringLit,
     // Keywords — Python-style + C++ power
     Var, Let, Func, Def, Class, Struct, Return,
-    If, Else, While, For, In, Repeat,
+    If, Else, Elif, While, For, In, Repeat,
     Int, Float, Bool, String, Char, True, False, And, Or, Not,
     Import, Asm, Unsafe, New, Delete, Extern,
     // Punctuation

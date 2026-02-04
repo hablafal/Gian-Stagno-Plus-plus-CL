@@ -149,6 +149,18 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         advance();
         return e;
     }
+    if (match(TokenKind::LBracket)) {
+        auto e = std::make_unique<Expr>();
+        e->kind = Expr::Kind::ListLit;
+        e->loc = l;
+        if (!check(TokenKind::RBracket)) {
+            do {
+                e->args.push_back(parseExpr());
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RBracket, "expected ']' after list elements");
+        return e;
+    }
     error("expected expression");
     return Expr::makeIntLit(0, l);
 }
@@ -166,6 +178,15 @@ std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
             m->member = mem;
             m->loc = l;
             base = std::move(m);
+        } else if (match(TokenKind::LBracket)) {
+            auto idx = parseExpr();
+            expect(TokenKind::RBracket, "expected ']' after index");
+            auto e = std::make_unique<Expr>();
+            e->kind = Expr::Kind::Index;
+            e->left = std::move(base);
+            e->right = std::move(idx);
+            e->loc = l;
+            base = std::move(e);
         } else if ((check(TokenKind::Lt) && lexer_.peekForGenericEnd()) || check(TokenKind::LParen)) {
             std::vector<Type> typeArgs;
             if (match(TokenKind::Lt)) {
@@ -190,11 +211,13 @@ std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
             }
             expect(TokenKind::RParen, "expected ')' after arguments");
 
-            if (base->kind == Expr::Kind::Member && base->left->kind == Expr::Kind::Var) {
-                std::string ns = base->left->ident;
+            if (base->kind == Expr::Kind::Member) {
                 std::string func = base->member;
                 auto c = Expr::makeCall(func, std::move(args), l);
-                c->ns = ns;
+                c->left = std::move(base->left); // The object/namespace
+                if (c->left->kind == Expr::Kind::Var) {
+                    c->ns = c->left->ident; // Could be a namespace
+                }
                 c->exprType.typeArgs = typeArgs;
                 base = std::move(c);
             } else if (base->kind == Expr::Kind::Var) {
@@ -328,6 +351,9 @@ std::unique_ptr<Stmt> Parser::parseIf() {
         } else {
             stmt->elseBranch = parseBlock();
         }
+    } else if (check(TokenKind::Elif)) {
+        current_.kind = TokenKind::If; // Treat 'elif' as 'if' for recursion
+        stmt->elseBranch = parseIf();
     }
     return stmt;
 }
@@ -492,16 +518,26 @@ StructDecl Parser::parseStructDecl() {
     }
     expect(TokenKind::LBrace, "expected '{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::Eof)) {
-        if (!check(TokenKind::Ident)) { error("expected member name"); sync(); break; }
-        StructMember m;
-        m.name = current_.text;
-        m.loc = loc();
-        advance();
-        expect(TokenKind::Colon, "expected ':'");
-        auto ty = parseType();
-        m.type = *ty;
-        s.members.push_back(std::move(m));
-        expect(TokenKind::Semicolon, "expected ';'");
+        if (check(TokenKind::Func) || check(TokenKind::Def)) {
+            s.methods.push_back(parseFuncDecl(false));
+        } else if (check(TokenKind::Ident)) {
+            StructMember m;
+            m.name = current_.text;
+            m.loc = loc();
+            advance();
+            if (match(TokenKind::Colon)) {
+                auto ty = parseType();
+                m.type = *ty;
+            } else {
+                // Infer type? For members we need at least a hint or default to int
+                m.type.kind = Type::Kind::Int;
+            }
+            s.members.push_back(std::move(m));
+            match(TokenKind::Semicolon); // optional
+        } else {
+            error("expected member or method");
+            sync();
+        }
     }
     expect(TokenKind::RBrace, "expected '}'");
     return s;
@@ -530,9 +566,12 @@ FuncDecl Parser::parseFuncDecl(bool isExtern) {
             p.name = current_.text;
             p.loc = loc();
             advance();
-            expect(TokenKind::Colon, "expected ':'");
-            auto ty = parseType();
-            p.type = *ty;
+            if (match(TokenKind::Colon)) {
+                auto ty = parseType();
+                p.type = *ty;
+            } else {
+                p.type.kind = Type::Kind::Int;
+            }
             f.params.push_back(std::move(p));
         } while (match(TokenKind::Comma));
     }

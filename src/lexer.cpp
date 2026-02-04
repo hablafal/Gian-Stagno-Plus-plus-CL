@@ -115,6 +115,7 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "struct") t.kind = TokenKind::Struct;
     else if (id == "if") t.kind = TokenKind::If;
     else if (id == "else") t.kind = TokenKind::Else;
+    else if (id == "elif") t.kind = TokenKind::Elif;
     else if (id == "while") t.kind = TokenKind::While;
     else if (id == "for") t.kind = TokenKind::For;
     else if (id == "in") t.kind = TokenKind::In;

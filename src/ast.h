@@ -15,7 +15,7 @@ struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List };
     Kind kind = Kind::Int;
     std::string structName;  // for StructRef or TypeParam name
     std::string ns;          // for StructRef
@@ -31,9 +31,9 @@ struct Type {
 
 struct Expr {
     enum class Kind {
-        IntLit, FloatLit, BoolLit, StringLit,
+        IntLit, FloatLit, BoolLit, StringLit, ListLit,
         Var, Binary, Unary, Call, Member, Cast,
-        Deref, AddressOf, New, Delete
+        Deref, AddressOf, New, Delete, Index
     };
     Kind kind = Kind::IntLit;
     Type exprType;
@@ -89,19 +89,6 @@ struct Stmt {
     std::string asmCode; // for Asm
 };
 
-struct StructMember {
-    std::string name;
-    Type type;
-    SourceLoc loc;
-};
-
-struct StructDecl {
-    std::string name;
-    std::vector<std::string> typeParams;
-    std::vector<StructMember> members;
-    SourceLoc loc;
-};
-
 struct FuncParam {
     std::string name;
     Type type;
@@ -117,6 +104,20 @@ struct FuncDecl {
     SourceLoc loc;
     bool isExtern = false;
     std::string externLib; // e.g. "C"
+};
+
+struct StructMember {
+    std::string name;
+    Type type;
+    SourceLoc loc;
+};
+
+struct StructDecl {
+    std::string name;
+    std::vector<std::string> typeParams;
+    std::vector<StructMember> members;
+    std::vector<FuncDecl> methods;
+    SourceLoc loc;
 };
 
 struct Import {

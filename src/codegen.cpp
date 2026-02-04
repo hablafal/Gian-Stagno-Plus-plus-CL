@@ -140,6 +140,39 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             else *out_ << "\tleaq\t" << label << "(%rip), %" << dest << "\n";
             break;
         }
+        case Expr::Kind::ListLit: {
+            // New dynamic list
+            int numArgs = (int)expr->args.size();
+            if (use32Bit_) {
+                *out_ << "\tpushl\t$" << numArgs << "\n\tcall\t_gspp_list_new\n\taddl\t$4, %esp\n";
+                for (int i = 0; i < numArgs; i++) {
+                    *out_ << "\tpushl\t%eax\n"; // save list
+                    emitExprToRax(expr->args[i].get());
+                    *out_ << "\tmovl\t%eax, %edx\n\tpopl\t%eax\n"; // restore list, elem in edx
+                    *out_ << "\tpushl\t%edx\n\tpushl\t%eax\n\tcall\t_gspp_list_append\n\taddl\t$8, %esp\n";
+                }
+            } else {
+                if (isLinux_) {
+                    *out_ << "\tmovq\t$" << numArgs << ", %rdi\n\tcall\tgspp_list_new\n";
+                    for (int i = 0; i < numArgs; i++) {
+                        *out_ << "\tpushq\t%rax\n";
+                        emitExprToRax(expr->args[i].get());
+                        *out_ << "\tmovq\t%rax, %rsi\n\tpopq\t%rdi\n";
+                        *out_ << "\tpushq\t%rdi\n\tcall\tgspp_list_append\n\tpopq\t%rax\n";
+                    }
+                } else {
+                    *out_ << "\tmovq\t$" << numArgs << ", %rcx\n\tsubq\t$32, %rsp\n\tcall\tgspp_list_new\n\taddq\t$32, %rsp\n";
+                    for (int i = 0; i < numArgs; i++) {
+                        *out_ << "\tpushq\t%rax\n";
+                        emitExprToRax(expr->args[i].get());
+                        *out_ << "\tmovq\t%rax, %rdx\n\tpopq\t%rcx\n";
+                        *out_ << "\tpushq\t%rcx\n\tsubq\t$32, %rsp\n\tcall\tgspp_list_append\n\taddq\t$32, %rsp\n\tpopq\t%rax\n";
+                    }
+                }
+            }
+            if (dest != rax) *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
+            break;
+        }
         case Expr::Kind::Var: {
             std::string loc = getVarLocation(expr->ident);
             if (loc.empty()) { error("unknown variable " + expr->ident, expr->loc); return; }
@@ -248,7 +281,159 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             }
             if (dest != "rax" && dest != "eax") *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
             break;
+        case Expr::Kind::Index: {
+            emitExprToRax(expr->left.get()); // base
+            *out_ << (use32Bit_ ? "\tpushl\t%eax\n" : "\tpushq\t%rax\n");
+            emitExprToRax(expr->right.get()); // index
+            *out_ << (use32Bit_ ? "\tpopl\t%edx\n" : "\tpopq\t%rdx\n"); // edx = base, eax = index
+            if (expr->left->exprType.kind == Type::Kind::String) {
+                *out_ << "\tmovzbl\t(%rdx,%rax), %eax\n";
+            } else if (expr->left->exprType.kind == Type::Kind::List) {
+                if (use32Bit_) {
+                    *out_ << "\tmovl\t(%edx), %edx\n"; // load list->data
+                    *out_ << "\tmovl\t(%edx,%eax,4), %eax\n"; // load data[index]
+                } else {
+                    *out_ << "\tmovq\t(%rdx), %rdx\n"; // load list->data
+                    *out_ << "\tmovq\t(%rdx,%rax,8), %rax\n"; // load data[index]
+                }
+            } else { // Pointer
+                int sz = getTypeSize(expr->exprType);
+                if (use32Bit_) *out_ << "\tmovl\t(%edx,%eax," << sz << "), %eax\n";
+                else *out_ << "\tmovq\t(%rdx,%rax," << sz << "), %rax\n";
+            }
+            if (dest != rax) *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
+            break;
+        }
         case Expr::Kind::Call: {
+            if (expr->left && expr->left->exprType.kind == Type::Kind::String) {
+                if (expr->ident == "len") {
+                    emitExprToRax(expr->left.get());
+                    if (use32Bit_) {
+                        *out_ << "\tpushl\t%eax\n\tcall\t_strlen\n\taddl\t$4, %esp\n";
+                    } else {
+                        if (isLinux_) {
+                            *out_ << "\tmovq\t%rax, %rdi\n\tcall\tstrlen\n";
+                        } else {
+                            *out_ << "\tmovq\t%rax, %rcx\n\tsubq\t$32, %rsp\n\tcall\tstrlen\n\taddq\t$32, %rsp\n";
+                        }
+                    }
+                    if (dest != rax) *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
+                    return;
+                }
+            }
+            if (expr->left && expr->left->exprType.kind == Type::Kind::List) {
+                if (expr->ident == "len") {
+                    emitExprToRax(expr->left.get());
+                    *out_ << "\t" << mov << "\t" << (use32Bit_ ? "4" : "8") << "(%" << rax << "), %" << rax << "\n";
+                    if (dest != rax) *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
+                    return;
+                }
+                if (expr->ident == "append") {
+                    emitExprToRax(expr->left.get());
+                    if (use32Bit_) {
+                        *out_ << "\tpushl\t%eax\n";
+                        emitExprToRax(expr->args[0].get());
+                        *out_ << "\tmovl\t%eax, %edx\n\tpopl\t%eax\n\tpushl\t%edx\n\tpushl\t%eax\n\tcall\t_gspp_list_append\n\taddl\t$8, %esp\n";
+                    } else {
+                        if (isLinux_) {
+                            *out_ << "\tpushq\t%rax\n";
+                            emitExprToRax(expr->args[0].get());
+                            *out_ << "\tmovq\t%rax, %rsi\n\tpopq\t%rdi\n\tcall\tgspp_list_append\n";
+                        } else {
+                            *out_ << "\tpushq\t%rax\n";
+                            emitExprToRax(expr->args[0].get());
+                            *out_ << "\tmovq\t%rax, %rdx\n\tpopq\t%rcx\n\tsubq\t$32, %rsp\n\tcall\tgspp_list_append\n\taddq\t$32, %rsp\n";
+                        }
+                    }
+                    return;
+                }
+            }
+            if (expr->left && (expr->left->exprType.kind == Type::Kind::StructRef || (expr->left->exprType.kind == Type::Kind::Pointer && expr->left->exprType.ptrTo && expr->left->exprType.ptrTo->kind == Type::Kind::StructRef))) {
+                Type& bty = (expr->left->exprType.kind == Type::Kind::Pointer) ? *expr->left->exprType.ptrTo : expr->left->exprType;
+                StructDef* sd = resolveStruct(bty.structName, bty.ns);
+                if (sd && sd->methods.count(expr->ident)) {
+                    FuncSymbol& ms = sd->methods[expr->ident];
+                    if (use32Bit_) {
+                        for (int i = (int)expr->args.size() - 1; i >= 0; i--) {
+                            emitExprToRax(expr->args[i].get()); *out_ << "\tpushl\t%eax\n";
+                        }
+                        emitExprToRax(expr->left.get()); *out_ << "\tpushl\t%eax\n";
+                        *out_ << "\tcall\t" << ms.mangledName << "\n";
+                        *out_ << "\taddl\t$" << (4 * (int)expr->args.size() + 4) << ", %esp\n";
+                        if (dest != "eax") *out_ << "\tmovl\t%eax, %" << dest << "\n";
+                    } else {
+                        if (isLinux_) {
+                            const char* regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+                            emitExprToRax(expr->left.get());
+                            *out_ << "\tpushq\t%rax\n";
+                            *out_ << "\tsubq\t$8, %rsp\n";
+                            for (size_t i = 0; i < expr->args.size() && i < 5; i++) {
+                                emitExpr(expr->args[i].get(), regs[i+1], false);
+                            }
+                            *out_ << "\tmovq\t8(%rsp), %rdi\n";
+                            *out_ << "\tcall\t" << ms.mangledName << "\n";
+                            *out_ << "\taddq\t$16, %rsp\n";
+                        } else {
+                            emitExpr(expr->left.get(), "rcx", false);
+                            for (size_t i = 0; i < expr->args.size() && i < 3; i++) {
+                                emitExpr(expr->args[i].get(), i == 0 ? "rdx" : i == 1 ? "r8" : "r9", false);
+                            }
+                            *out_ << "\tsubq\t$32, %rsp\n\tcall\t" << ms.mangledName << "\n\taddq\t$32, %rsp\n";
+                        }
+                        if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                    }
+                    return;
+                }
+            }
+
+            if (expr->ns.empty()) {
+                StructDef* sd = resolveStruct(expr->ident, "");
+                if (sd) {
+                    // Constructor
+                    if (use32Bit_) {
+                        *out_ << "\tpushl\t$" << sd->sizeBytes << "\n\tcall\tmalloc\n\taddl\t$4, %esp\n";
+                        if (sd->methods.count("init")) {
+                            *out_ << "\tpushl\t%eax\n"; // save self
+                            for (int i = (int)expr->args.size() - 1; i >= 0; i--) {
+                                emitExprToRax(expr->args[i].get()); *out_ << "\tpushl\t%eax\n";
+                            }
+                            *out_ << "\tmovl\t" << (4 * expr->args.size()) << "(%esp), %eax\n\tpushl\t%eax\n";
+                            *out_ << "\tcall\t" << sd->mangledName << "_init\n";
+                            *out_ << "\taddl\t$" << (4 * expr->args.size() + 4) << ", %esp\n";
+                            *out_ << "\tpopl\t%eax\n";
+                        }
+                        if (dest != "eax") *out_ << "\tmovl\t%eax, %" << dest << "\n";
+                    } else {
+                        if (isLinux_) {
+                            *out_ << "\tmovq\t$" << sd->sizeBytes << ", %rdi\n\tcall\tmalloc\n";
+                            if (sd->methods.count("init")) {
+                                *out_ << "\tpushq\t%rax\n";
+                                *out_ << "\tsubq\t$8, %rsp\n"; // Align to 16
+                                const char* regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+                                for (size_t i = 0; i < expr->args.size() && i < 5; i++) {
+                                    emitExpr(expr->args[i].get(), regs[i+1], false);
+                                }
+                                *out_ << "\tmovq\t8(%rsp), %rdi\n"; // self
+                                *out_ << "\tcall\t" << sd->mangledName << "_init\n";
+                                *out_ << "\taddq\t$8, %rsp\n";
+                                *out_ << "\tpopq\t%rax\n";
+                            }
+                        } else {
+                            *out_ << "\tmovq\t$" << sd->sizeBytes << ", %rcx\n\tsubq\t$32, %rsp\n\tcall\tmalloc\n\taddq\t$32, %rsp\n";
+                            if (sd->methods.count("init")) {
+                                *out_ << "\tpushq\t%rax\n";
+                                for (size_t i = 0; i < expr->args.size() && i < 3; i++) {
+                                    emitExpr(expr->args[i].get(), i == 0 ? "rdx" : i == 1 ? "r8" : "r9", false);
+                                }
+                                *out_ << "\tpopq\t%rcx\n\tpushq\t%rcx\n\tsubq\t$32, %rsp\n\tcall\t" << sd->mangledName << "_init\n\taddq\t$32, %rsp\n\tpopq\t%rax\n";
+                            }
+                        }
+                        if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                    }
+                    return;
+                }
+            }
+
             std::string funcName = expr->ident;
             if (expr->ns.empty() && (funcName == "print" || funcName == "println")) {
                 for (size_t i = 0; i < expr->args.size(); i++) {
@@ -307,8 +492,12 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
                     *out_ << "\tcall\t" << fs->mangledName << "\n";
                     int totalPushed = (ireg > 6 ? ireg - 6 : 0) + (freg > 8 ? freg - 8 : 0);
                     if (totalPushed > 0) *out_ << "\taddq\t$" << (totalPushed * 8) << ", %rsp\n";
+                    if (fs->returnType.kind == Type::Kind::Float) {
+                        if (dest != "xmm0") *out_ << "\tmovsd\t%xmm0, %" << dest << "\n";
+                        return;
+                    }
                 } else {
-                    bool floatFirst = (expr->ident == "print_float" || expr->ident == "println_float") && !expr->args.empty();
+                    bool floatFirst = (expr->ident == "print_float" || expr->ident == "println_float" || expr->ident == "sqrt") && !expr->args.empty();
                     for (size_t i = 0; i < expr->args.size(); i++) {
                         if (i < 4) {
                             if (i == 0 && floatFirst) emitExpr(expr->args[i].get(), "xmm0", true);
@@ -324,7 +513,11 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
                     *out_ << "\taddq\t$32, %rsp\n";
                     for (size_t i = 4; i < expr->args.size(); i++) *out_ << "\taddq\t$8, %rsp\n";
                 }
-                if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
+                if (fs->returnType.kind == Type::Kind::Float) {
+                    if (dest != "xmm0") *out_ << "\tmovsd\t%xmm0, %" << dest << "\n";
+                } else {
+                    if (dest != rax) *out_ << "\t" << mov << "\t%" << rax << ", %" << dest << "\n";
+                }
             }
             break;
         }
@@ -581,7 +774,8 @@ void CodeGenerator::emitFunc(const FuncSymbol& fs) {
     if (fs.decl && fs.decl->isExtern) return;
     if (fs.mangledName == "println" || fs.mangledName == "print" || fs.mangledName == "print_float" ||
         fs.mangledName == "println_float" || fs.mangledName == "print_string" || fs.mangledName == "println_string" ||
-        fs.mangledName == "gspp_input" || fs.mangledName == "gspp_read_file" || fs.mangledName == "gspp_write_file") return;
+        fs.mangledName == "gspp_input" || fs.mangledName == "gspp_read_file" || fs.mangledName == "gspp_write_file" ||
+        fs.mangledName == "abs" || fs.mangledName == "sqrt") return;
 
     currentFunc_ = fs.decl;
     currentVars_ = fs.locals;
@@ -605,18 +799,33 @@ void CodeGenerator::emitFunc(const FuncSymbol& fs) {
                 const char* regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
                 const char* fregs[] = {"xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"};
                 int ireg = 0, freg = 0;
+                if (fs.isMethod) {
+                    std::string loc = getVarLocation("self");
+                    if (!loc.empty()) *out_ << "\tmovq\t%" << regs[ireg++] << ", " << loc << "\n";
+                }
                 for (size_t i = 0; i < fs.decl->params.size(); i++) {
+                    std::string loc = getVarLocation(fs.decl->params[i].name);
+                    if (loc.empty()) continue;
                     if (fs.decl->params[i].type.kind == Type::Kind::Float) {
-                        if (freg < 8) *out_ << "\tmovq\t%" << fregs[freg++] << ", " << (16 + i * 8) << "(%rbp)\n";
+                        if (freg < 8) *out_ << "\tmovq\t%" << fregs[freg++] << ", " << loc << "\n";
                     } else {
-                        if (ireg < 6) *out_ << "\tmovq\t%" << regs[ireg++] << ", " << (16 + i * 8) << "(%rbp)\n";
+                        if (ireg < 6) *out_ << "\tmovq\t%" << regs[ireg++] << ", " << loc << "\n";
                     }
                 }
             } else {
-                if (fs.decl->params.size() > 0) *out_ << "\tmovq\t%rcx, 16(%rbp)\n";
-                if (fs.decl->params.size() > 1) *out_ << "\tmovq\t%rdx, 24(%rbp)\n";
-                if (fs.decl->params.size() > 2) *out_ << "\tmovq\t%r8, 32(%rbp)\n";
-                if (fs.decl->params.size() > 3) *out_ << "\tmovq\t%r9, 40(%rbp)\n";
+                if (fs.isMethod) {
+                    std::string loc = getVarLocation("self");
+                    if (!loc.empty()) *out_ << "\tmovq\t%rcx, " << loc << "\n";
+                }
+                for (size_t i = 0; i < fs.decl->params.size(); i++) {
+                    std::string loc = getVarLocation(fs.decl->params[i].name);
+                    if (loc.empty()) continue;
+                    int idx = i + (fs.isMethod ? 1 : 0);
+                    if (idx == 0) *out_ << "\tmovq\t%rcx, " << loc << "\n";
+                    else if (idx == 1) *out_ << "\tmovq\t%rdx, " << loc << "\n";
+                    else if (idx == 2) *out_ << "\tmovq\t%r8, " << loc << "\n";
+                    else if (idx == 3) *out_ << "\tmovq\t%r9, " << loc << "\n";
+                }
             }
         }
     }
@@ -658,6 +867,8 @@ void CodeGenerator::emitProgramBody() {
         *out_ << "\t.extern\t_strcat\n";
         *out_ << "\t.extern\tmalloc\n";
         *out_ << "\t.extern\tfree\n";
+        *out_ << "\t.extern\tabs\n";
+        *out_ << "\t.extern\tsqrt\n";
         *out_ << "\t.globl\tprintln\nprintln:\n";
         *out_ << "\tpushl\t%ebp\n\tmovl\t%esp, %ebp\n";
         *out_ << "\tpushl\t8(%ebp)\n\tpushl\t$.LC_fmt_d_nl\n\tcall\t_printf\n\taddl\t$8, %esp\n\tleave\n\tret\n";
@@ -721,6 +932,8 @@ void CodeGenerator::emitProgramBody() {
         *out_ << "\t.extern\tstrcat\n";
         *out_ << "\t.extern\tmalloc\n";
         *out_ << "\t.extern\tfree\n";
+        *out_ << "\t.extern\tabs\n";
+        *out_ << "\t.extern\tsqrt\n";
         if (isLinux_) {
             *out_ << "\t.globl\tprintln\nprintln:\n";
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n";
@@ -781,6 +994,25 @@ void CodeGenerator::emitProgramBody() {
             *out_ << "\tmovq\t-8(%rbp), %rdi\n\tleaq\t.LC_mode_w(%rip), %rsi\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LWF_end\n";
             *out_ << "\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rdi\n\tmovq\t-24(%rbp), %rsi\n\tcall\tfputs\n";
             *out_ << "\tmovq\t-24(%rbp), %rdi\n\tcall\tfclose\n.LWF_end:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.globl\tgspp_list_new\ngspp_list_new:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
+            *out_ << "\tmovq\t$24, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n";
+            *out_ << "\tmovq\t$80, %rdi\n\tcall\tmalloc\n\tmovq\t-8(%rbp), %rdx\n";
+            *out_ << "\tmovq\t%rax, (%rdx)\n\tmovq\t$0, 8(%rdx)\n\tmovq\t$10, 16(%rdx)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\trealloc\n";
+            *out_ << "\t.globl\tgspp_list_append\ngspp_list_append:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
+            *out_ << "\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\tmovq\t8(%rax), %rcx\n\tcmpq\t16(%rax), %rcx\n\tjl\t.Lappend_now_lin\n";
+            *out_ << "\tmovq\t16(%rax), %rdx\n\tshlq\t$1, %rdx\n\tmovq\t%rdx, 16(%rax)\n";
+            *out_ << "\tmovq\t(%rax), %rdi\n\tshlq\t$3, %rdx\n\tmovq\t%rdx, %rsi\n\tcall\trealloc\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdx\n\tmovq\t%rax, (%rdx)\n";
+            *out_ << ".Lappend_now_lin:\n\tmovq\t-8(%rbp), %rax\n\tmovq\t(%rax), %rdx\n\tmovq\t8(%rax), %rcx\n";
+            *out_ << "\tmovq\t-16(%rbp), %rdi\n\tmovq\t%rdi, (%rdx,%rcx,8)\n\tincq\t8(%rax)\n";
+            *out_ << "\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
         } else {
             *out_ << "\t.globl\tprintln\nprintln:\n";
             *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
@@ -842,6 +1074,25 @@ void CodeGenerator::emitProgramBody() {
             *out_ << "\tmovq\t-8(%rbp), %rcx\n\tleaq\t.LC_mode_w(%rip), %rdx\n\tcall\tfopen\n\ttestq\t%rax, %rax\n\tje\t.LWF_end_win\n";
             *out_ << "\tmovq\t%rax, -24(%rbp)\n\tmovq\t-16(%rbp), %rcx\n\tmovq\t-24(%rbp), %rdx\n\tcall\tfputs\n";
             *out_ << "\tmovq\t-24(%rbp), %rcx\n\tcall\tfclose\n.LWF_end_win:\n\taddq\t$48, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.globl\tgspp_list_new\ngspp_list_new:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
+            *out_ << "\tmovq\t$24, %rdi\n\tcall\tmalloc\n\tmovq\t%rax, -8(%rbp)\n";
+            *out_ << "\tmovq\t$80, %rdi\n\tcall\tmalloc\n\tmovq\t-8(%rbp), %rdx\n";
+            *out_ << "\tmovq\t%rax, (%rdx)\n\tmovq\t$0, 8(%rdx)\n\tmovq\t$10, 16(%rdx)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
+
+            *out_ << "\t.extern\trealloc\n";
+            *out_ << "\t.globl\tgspp_list_append\ngspp_list_append:\n";
+            *out_ << "\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n\tsubq\t$32, %rsp\n";
+            *out_ << "\tmovq\t%rdi, -8(%rbp)\n\tmovq\t%rsi, -16(%rbp)\n";
+            *out_ << "\tmovq\t-8(%rbp), %rax\n\tmovq\t8(%rax), %rcx\n\tcmpq\t16(%rax), %rcx\n\tjl\t.Lappend_now\n";
+            *out_ << "\tmovq\t16(%rax), %rdx\n\tshlq\t$1, %rdx\n\tmovq\t%rdx, 16(%rax)\n";
+            *out_ << "\tmovq\t(%rax), %rdi\n\tshlq\t$3, %rdx\n\tmovq\t%rdx, %rsi\n\tcall\trealloc\n";
+            *out_ << "\tmovq\t-8(%rbp), %rdx\n\tmovq\t%rax, (%rdx)\n";
+            *out_ << ".Lappend_now:\n\tmovq\t-8(%rbp), %rax\n\tmovq\t(%rax), %rdx\n\tmovq\t8(%rax), %rcx\n";
+            *out_ << "\tmovq\t-16(%rbp), %rdi\n\tmovq\t%rdi, (%rdx,%rcx,8)\n\tincq\t8(%rax)\n";
+            *out_ << "\taddq\t$32, %rsp\n\tpopq\t%rbp\n\tret\n\n";
         }
     }
     for (const auto& pair : semantic_->functions())
@@ -849,6 +1100,11 @@ void CodeGenerator::emitProgramBody() {
     for (const auto& modPair : semantic_->moduleFunctions()) {
         for (const auto& pair : modPair.second) {
             emitFunc(pair.second);
+        }
+    }
+    for (const auto& pair : semantic_->structs()) {
+        for (const auto& mPair : pair.second.methods) {
+            emitFunc(mPair.second);
         }
     }
 }
