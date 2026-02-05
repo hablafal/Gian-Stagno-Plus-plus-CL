@@ -31,6 +31,7 @@ struct FuncSymbol {
 struct StructDef {
     std::string name;
     std::string mangledName;
+    std::string baseName;
     std::vector<std::pair<std::string, Type>> members;
     std::unordered_map<std::string, size_t> memberIndex;
     std::unordered_map<std::string, FuncSymbol> methods;
@@ -45,6 +46,7 @@ public:
     const std::vector<std::string>& errors() const { return errors_; }
     StructDef* getStruct(const std::string& name, const std::string& ns = "");
     FuncSymbol* getFunc(const std::string& name, const std::string& ns = "");
+    FuncSymbol* getMethod(StructDef* sd, const std::string& name);
     const std::unordered_map<std::string, StructDef>& structs() const { return structs_; }
     const std::unordered_map<std::string, FuncSymbol>& functions() const { return functions_; }
     const std::unordered_map<std::string, std::unordered_map<std::string, FuncSymbol>>& moduleFunctions() const { return moduleFunctions_; }
@@ -89,6 +91,7 @@ private:
     std::vector<std::string> errors_;
     FuncDecl* currentFunc_ = nullptr;
     FuncSymbol* currentFuncSymbol_ = nullptr;
+    StructDef* currentStruct_ = nullptr;
     int nextFrameOffset_ = 0;
     std::string currentNamespace_;
 };

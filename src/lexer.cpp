@@ -160,7 +160,8 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "bool") t.kind = TokenKind::Bool;
     else if (id == "string") t.kind = TokenKind::String;
     else if (id == "Text") t.kind = TokenKind::Text;
-    else if (id == "Arr") t.kind = TokenKind::Arr;
+    else if (id == "Arr" || id == "arr") t.kind = TokenKind::Arr;
+    else if (id == "tuple") t.kind = TokenKind::Tuple;
     else if (id == "char") t.kind = TokenKind::Char;
     else if (id == "true" || id == "True" || id == "yes" || id == "on") t.kind = TokenKind::True;
     else if (id == "false" || id == "False" || id == "no" || id == "off") t.kind = TokenKind::False;
@@ -175,6 +176,14 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "delete") t.kind = TokenKind::Delete;
     else if (id == "cast") t.kind = TokenKind::Cast;
     else if (id == "sizeof") t.kind = TokenKind::Sizeof;
+    else if (id == "spawn") t.kind = TokenKind::Spawn;
+    else if (id == "join") t.kind = TokenKind::Join;
+    else if (id == "mutex") t.kind = TokenKind::Mutex;
+    else if (id == "lock") t.kind = TokenKind::Lock;
+    else if (id == "thread") t.kind = TokenKind::Thread;
+    else if (id == "chan") t.kind = TokenKind::Chan;
+    else if (id == "ptr") t.kind = TokenKind::Ptr;
+    else if (id == "super") t.kind = TokenKind::Super;
     else if (id == "extern") t.kind = TokenKind::Extern;
     else if (id == "nil" || id == "Nil") t.kind = TokenKind::Nil;
     else t.kind = TokenKind::Ident;
@@ -288,6 +297,7 @@ Token Lexer::lex() {
             break;
         case '<':
             if (cur() == '=') { advance(); t.kind = TokenKind::Le; }
+            else if (cur() == '-') { advance(); t.kind = TokenKind::ArrowLeft; }
             else t.kind = TokenKind::Lt;
             break;
         case '>':

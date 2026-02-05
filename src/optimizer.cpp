@@ -18,6 +18,7 @@ void Optimizer::optimizeExpr(Expr* expr) {
             break;
         }
         case Expr::Kind::Unary: optimizeExpr(expr->right.get()); break;
+        case Expr::Kind::Spawn: optimizeExpr(expr->left.get()); break;
         case Expr::Kind::Call: for (auto& a : expr->args) optimizeExpr(a.get()); if (expr->left) optimizeExpr(expr->left.get()); break;
         case Expr::Kind::Slice:
             optimizeExpr(expr->left.get());
@@ -33,6 +34,11 @@ void Optimizer::optimizeExpr(Expr* expr) {
             for (auto& a : expr->args) optimizeExpr(a.get());
             break;
         case Expr::Kind::Ternary: optimizeExpr(expr->cond.get()); optimizeExpr(expr->left.get()); optimizeExpr(expr->right.get()); break;
+        case Expr::Kind::Receive:
+        case Expr::Kind::ChanInit:
+            optimizeExpr(expr->right.get());
+            for (auto& a : expr->args) optimizeExpr(a.get());
+            break;
         default: break;
     }
 }
@@ -59,6 +65,8 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
         case Stmt::Kind::Assign: optimizeExpr(stmt->assignTarget.get()); optimizeExpr(stmt->assignValue.get()); break;
         case Stmt::Kind::If: optimizeExpr(stmt->condition.get()); optimizeStmt(stmt->thenBranch.get()); if (stmt->elseBranch) optimizeStmt(stmt->elseBranch.get()); break;
         case Stmt::Kind::While: optimizeExpr(stmt->condition.get()); optimizeStmt(stmt->body.get()); break;
+        case Stmt::Kind::Join: optimizeExpr(stmt->expr.get()); break;
+        case Stmt::Kind::Lock: optimizeExpr(stmt->expr.get()); optimizeStmt(stmt->body.get()); break;
         case Stmt::Kind::For: optimizeStmt(stmt->initStmt.get()); optimizeExpr(stmt->condition.get()); optimizeStmt(stmt->stepStmt.get()); optimizeStmt(stmt->body.get()); break;
         case Stmt::Kind::Repeat: optimizeExpr(stmt->condition.get()); optimizeStmt(stmt->body.get()); break;
         case Stmt::Kind::RangeFor: optimizeExpr(stmt->startExpr.get()); optimizeExpr(stmt->endExpr.get()); optimizeStmt(stmt->body.get()); break;
@@ -70,6 +78,10 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
         case Stmt::Kind::ExprStmt: optimizeExpr(stmt->expr.get()); break;
         case Stmt::Kind::Unsafe: optimizeStmt(stmt->body.get()); break;
         case Stmt::Kind::Asm: break;
+        case Stmt::Kind::Send:
+            optimizeExpr(stmt->assignTarget.get());
+            optimizeExpr(stmt->assignValue.get());
+            break;
     }
 }
 

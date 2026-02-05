@@ -15,7 +15,7 @@ struct Expr;
 struct Stmt;
 
 struct Type {
-    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List, Dict, Tuple, Set };
+    enum class Kind { Int, Float, Bool, StructRef, Pointer, Void, String, Char, TypeParam, List, Dict, Tuple, Set, Mutex, Thread, Chan };
     Kind kind = Kind::Int;
     bool isMutable = false; // for Tuples
     std::string structName;  // for StructRef or TypeParam name
@@ -35,7 +35,7 @@ struct Expr {
         IntLit, FloatLit, BoolLit, StringLit, ListLit, DictLit, SetLit, TupleLit,
         Var, Binary, Unary, Call, Member, Cast, Sizeof,
         Deref, AddressOf, New, Delete, Index, Slice, Ternary,
-        Comprehension
+        Comprehension, Spawn, Receive, ChanInit, Super
     };
     Kind kind = Kind::IntLit;
     Type exprType;
@@ -57,6 +57,7 @@ struct Expr {
     static std::unique_ptr<Expr> makeIntLit(int64_t v, SourceLoc loc);
     static std::unique_ptr<Expr> makeFloatLit(double v, SourceLoc loc);
     static std::unique_ptr<Expr> makeBoolLit(bool v, SourceLoc loc);
+    static std::unique_ptr<Expr> makeStringLit(const std::string& v, SourceLoc loc);
     static std::unique_ptr<Expr> makeVar(const std::string& id, SourceLoc loc);
     static std::unique_ptr<Expr> makeBinary(std::unique_ptr<Expr> l, const std::string& op,
                                             std::unique_ptr<Expr> r, SourceLoc loc);
@@ -85,7 +86,8 @@ struct FuncDecl {
 struct Stmt {
     enum class Kind {
         Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
-        Unsafe, Asm, Repeat, RangeFor, ForEach, Switch, Case, Defer
+        Unsafe, Asm, Repeat, RangeFor, ForEach, Switch, Case, Defer,
+        Lock, Join, Send
     };
     Kind kind = Kind::Block;
     SourceLoc loc;
@@ -118,6 +120,7 @@ struct StructMember {
 
 struct StructDecl {
     std::string name;
+    std::string baseName;
     std::vector<std::string> typeParams;
     std::vector<StructMember> members;
     std::vector<FuncDecl> methods;

@@ -34,6 +34,15 @@ std::unique_ptr<Expr> Expr::makeIntLit(int64_t v, SourceLoc loc) {
     return e;
 }
 
+std::unique_ptr<Expr> Expr::makeStringLit(const std::string& v, SourceLoc loc) {
+    auto e = std::make_unique<Expr>();
+    e->kind = Kind::StringLit;
+    e->ident = v;
+    e->exprType.kind = Type::Kind::String;
+    e->loc = loc;
+    return e;
+}
+
 std::unique_ptr<Expr> Expr::makeFloatLit(double v, SourceLoc loc) {
     auto e = std::make_unique<Expr>();
     e->kind = Kind::FloatLit;

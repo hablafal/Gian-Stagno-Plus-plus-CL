@@ -12,7 +12,7 @@ namespace gspp {
 
 class CodeGenerator {
 public:
-    CodeGenerator(Program* program, SemanticAnalyzer* semantic, std::ostream& out, bool use32Bit);
+    CodeGenerator(Program* program, SemanticAnalyzer* semantic, std::ostream& out, bool use32Bit, bool isLinux);
     bool generate();
     const std::vector<std::string>& errors() const { return errors_; }
 
@@ -29,6 +29,7 @@ private:
     int getFrameSize();
     std::string nextLabel();
     void error(const std::string& msg, SourceLoc loc);
+    void emitCall(const std::string& label, int numArgs = 0);
     StructDef* resolveStruct(const std::string& name, const std::string& ns);
     FuncSymbol* resolveFunc(const std::string& name, const std::string& ns);
 
@@ -36,6 +37,7 @@ private:
     SemanticAnalyzer* semantic_;
     std::ostream* out_;
     const FuncDecl* currentFunc_ = nullptr;
+    std::string currentEndLabel_;
     std::vector<std::vector<Stmt*>> deferStack_;
     std::unordered_map<std::string, VarSymbol> currentVars_;
     int frameSize_ = 0;

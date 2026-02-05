@@ -135,7 +135,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "gsc: cannot write '" << asmPath << "'\n";
         return 1;
     }
-    gspp::CodeGenerator codegen(program.get(), &semantic, asmFile, !use64Bit);
+#ifdef _WIN32
+    bool isLinux = false;
+#else
+    bool isLinux = true;
+#endif
+    gspp::CodeGenerator codegen(program.get(), &semantic, asmFile, !use64Bit, isLinux);
     if (!codegen.generate()) {
         for (const auto& e : codegen.errors()) std::cerr << e << "\n";
         return 1;
@@ -153,8 +158,8 @@ int main(int argc, char* argv[]) {
         : "gcc -m32 -Wl,-subsystem,console -Wl,-e,_main -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lmsvcrt -lm";
 #else
     std::string linkCmd = use64Bit
-        ? "g++ -m64 -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm"
-        : "g++ -m32 -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm";
+        ? "g++ -m64 -pthread -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm"
+        : "g++ -m32 -pthread -o \"" + outPath + "\" \"" + asmPath + "\" libgspprun.a -lm";
 #endif
     if (debugMode) linkCmd += " -g";
     int ret = runCommand(linkCmd);
