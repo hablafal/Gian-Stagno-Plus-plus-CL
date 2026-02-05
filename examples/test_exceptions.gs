@@ -1,20 +1,14 @@
-# Test Exceptions
-try:
-    log("In try block")
-    raise 123
-    log("This should not print")
-except e:
-    log("Caught exception: ", e)
-finally:
-    log("Finally block runs")
+fn test_exc():
+    println_string("Before raise")
+    raise "My Error"
+    println_string("After raise (should not see this)")
 
-log("Program continues")
-
-fn fail():
-    log("In fail()")
-    raise 456
-
-try:
-    fail()
-except error:
-    log("Caught nested exception: ", error)
+fn main():
+    try:
+        test_exc()
+    except Exception as e:
+        println_string("Caught exception:")
+        println_string(e)
+    finally:
+        println_string("In finally block")
+    println_string("After try-except")

@@ -3,6 +3,7 @@
 #include <string>
 #include <cstring>
 #include <cstdint>
+#include <new>
 
 struct DictEntry {
     bool is_string;
@@ -19,8 +20,17 @@ struct GSPPDict {
 
 extern "C" {
 
+void* gspp_alloc(size_t size);
+void* gspp_alloc_with_dtor(size_t size, void (*dtor)(void*));
+
+void gspp_dict_dtor(void* ptr) {
+    ((GSPPDict*)ptr)->~GSPPDict();
+}
+
 GSPPDict* gspp_dict_new() {
-    return new GSPPDict();
+    GSPPDict* d = (GSPPDict*)gspp_alloc_with_dtor(sizeof(GSPPDict), gspp_dict_dtor);
+    new (d) GSPPDict();
+    return d;
 }
 
 static bool is_string_ptr(uint64_t val) {
@@ -141,7 +151,8 @@ long long gspp_dict_len(GSPPDict* dict) {
 }
 
 GSPPDict* gspp_dict_union(GSPPDict* d1, GSPPDict* d2) {
-    GSPPDict* res = new GSPPDict(*d1);
+    GSPPDict* res = (GSPPDict*)gspp_alloc_with_dtor(sizeof(GSPPDict), gspp_dict_dtor);
+    new (res) GSPPDict(*d1);
     for (auto& entry : d2->entries) {
         gspp_dict_set(res, entry.is_string ? (uint64_t)entry.key.s : entry.key.i, entry.value);
     }
@@ -149,7 +160,7 @@ GSPPDict* gspp_dict_union(GSPPDict* d1, GSPPDict* d2) {
 }
 
 GSPPDict* gspp_dict_intersection(GSPPDict* d1, GSPPDict* d2) {
-    GSPPDict* res = new GSPPDict();
+    GSPPDict* res = gspp_dict_new();
     for (auto& entry : d1->entries) {
         uint64_t key = entry.is_string ? (uint64_t)entry.key.s : entry.key.i;
         for (auto& e2 : d2->entries) {

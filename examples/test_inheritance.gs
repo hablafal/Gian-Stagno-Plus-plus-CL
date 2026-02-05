@@ -1,21 +1,25 @@
 class Animal:
-    def init(name: string):
+    name: string
+    def init(self, name: string):
         self.name = name
 
-    def speak():
-        log("Animal makes a sound")
+    def speak(self):
+        println_string("Animal makes a sound")
 
 class Dog(Animal):
-    def init(name: string, breed: string):
+    breed: string
+    def init(self, name: string, breed: string):
         super.init(name)
         self.breed = breed
 
-    def speak():
+    def speak(self):
         super.speak()
-        log(self.name, " barks: Woof!")
+        println_string("Dog barks: Woof!")
 
 fn main():
-    d = Dog("Buddy", "Golden Retriever")
-    log("Dog name: ", d.name)
-    log("Dog breed: ", d.breed)
+    let d = new Dog("Buddy", "Golden Retriever")
+    println_string("Dog name: ")
+    println_string(d.name)
+    println_string("Dog breed: ")
+    println_string(d.breed)
     d.speak()

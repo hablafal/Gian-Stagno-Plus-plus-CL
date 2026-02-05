@@ -22,6 +22,7 @@ enum class TokenKind {
     Int, Float, Decimal, Bool, String, Text, Arr, Char, Tuple, True, False, Yes, No, On, Off, And, Or, Not,
     Import, Use, Asm, Unsafe, New, Delete, Extern, Nil, Cast, Sizeof,
     Spawn, Mutex, Lock, Join, Thread, Chan, Ptr, Super,
+    Try, Except, Finally, Raise,
     // Punctuation
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semicolon, Comma, Colon, Arrow, ArrowLeft,

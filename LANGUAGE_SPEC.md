@@ -2,7 +2,7 @@
 
 ## Keywords
 
-`var`, `let`, `func`, `def`, `fn`, `class`, `struct`, `if`, `else`, `elif`, `while`, `for`, `in`, `range`, `return`, `import`, `as`, `from`, `asm`, `unsafe`, `new`, `delete`, `extern`, `nil`, `cast`, `sizeof`, `spawn`, `join`, `mutex`, `lock`, `chan`, `ptr`, `super`, `true`, `false`, `and`, `or`, `not`
+`var`, `let`, `func`, `def`, `fn`, `class`, `struct`, `if`, `else`, `elif`, `while`, `for`, `in`, `range`, `return`, `import`, `as`, `from`, `asm`, `unsafe`, `new`, `delete`, `extern`, `nil`, `cast`, `sizeof`, `spawn`, `join`, `mutex`, `lock`, `chan`, `ptr`, `super`, `try`, `except`, `finally`, `raise`, `true`, `false`, `and`, `or`, `not`
 
 ## Types
 
@@ -31,6 +31,16 @@ let c = chan[int](10)
 spawn some_func(c)
 c <- 42      # send
 let v = <- c # receive
+```
+
+### Exceptions
+```gs
+try:
+    raise "Something went wrong"
+except Exception as e:
+    println(e)
+finally:
+    println("Cleanup")
 ```
 
 ### Low-level

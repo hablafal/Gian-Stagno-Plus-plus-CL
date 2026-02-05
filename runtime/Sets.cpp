@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 struct GSPPSet {
     std::unordered_set<uint64_t> elements;
@@ -14,8 +15,17 @@ struct GSPPSet {
 
 extern "C" {
 
+void* gspp_alloc(size_t size);
+void* gspp_alloc_with_dtor(size_t size, void (*dtor)(void*));
+
+void gspp_set_dtor(void* ptr) {
+    ((GSPPSet*)ptr)->~GSPPSet();
+}
+
 GSPPSet* gspp_set_new() {
-    return new GSPPSet();
+    GSPPSet* s = (GSPPSet*)gspp_alloc_with_dtor(sizeof(GSPPSet), gspp_set_dtor);
+    new (s) GSPPSet();
+    return s;
 }
 
 
@@ -30,7 +40,8 @@ bool gspp_set_has(GSPPSet* s, uint64_t val) {
 }
 
 GSPPSet* gspp_set_union(GSPPSet* s1, GSPPSet* s2) {
-    GSPPSet* res = new GSPPSet(*s1);
+    GSPPSet* res = (GSPPSet*)gspp_alloc_with_dtor(sizeof(GSPPSet), gspp_set_dtor);
+    new (res) GSPPSet(*s1);
     for (uint64_t e : s2->elements) {
         res->elements.insert(e);
     }
@@ -38,7 +49,7 @@ GSPPSet* gspp_set_union(GSPPSet* s1, GSPPSet* s2) {
 }
 
 GSPPSet* gspp_set_intersection(GSPPSet* s1, GSPPSet* s2) {
-    GSPPSet* res = new GSPPSet();
+    GSPPSet* res = gspp_set_new();
     for (uint64_t e : s1->elements) {
         if (s2->elements.find(e) != s2->elements.end()) {
             res->elements.insert(e);

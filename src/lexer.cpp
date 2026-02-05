@@ -184,6 +184,10 @@ Token Lexer::lexIdentOrKeyword() {
     else if (id == "chan") t.kind = TokenKind::Chan;
     else if (id == "ptr") t.kind = TokenKind::Ptr;
     else if (id == "super") t.kind = TokenKind::Super;
+    else if (id == "try") t.kind = TokenKind::Try;
+    else if (id == "except") t.kind = TokenKind::Except;
+    else if (id == "finally") t.kind = TokenKind::Finally;
+    else if (id == "raise") t.kind = TokenKind::Raise;
     else if (id == "extern") t.kind = TokenKind::Extern;
     else if (id == "nil" || id == "Nil") t.kind = TokenKind::Nil;
     else t.kind = TokenKind::Ident;

@@ -82,6 +82,17 @@ void Optimizer::optimizeStmt(Stmt* stmt) {
             optimizeExpr(stmt->assignTarget.get());
             optimizeExpr(stmt->assignValue.get());
             break;
+        case Stmt::Kind::Try:
+            optimizeStmt(stmt->body.get());
+            for (auto& h : stmt->handlers) optimizeStmt(h.get());
+            if (stmt->finallyBlock) optimizeStmt(stmt->finallyBlock.get());
+            break;
+        case Stmt::Kind::Except:
+            optimizeStmt(stmt->body.get());
+            break;
+        case Stmt::Kind::Raise:
+            optimizeExpr(stmt->expr.get());
+            break;
     }
 }
 

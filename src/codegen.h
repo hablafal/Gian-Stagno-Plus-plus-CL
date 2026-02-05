@@ -27,9 +27,13 @@ private:
     int getTypeSize(const Type& t);
     std::string getVarLocation(const std::string& name);
     int getFrameSize();
+    bool isRefCounted(const Type& t);
+    bool isRCProducer(Expr* expr);
     std::string nextLabel();
     void error(const std::string& msg, SourceLoc loc);
     void emitCall(const std::string& label, int numArgs = 0);
+    void emitRCRelease(const std::string& varName);
+    void emitRCRetain(const std::string& reg);
     StructDef* resolveStruct(const std::string& name, const std::string& ns);
     FuncSymbol* resolveFunc(const std::string& name, const std::string& ns);
 
@@ -39,6 +43,7 @@ private:
     const FuncDecl* currentFunc_ = nullptr;
     std::string currentEndLabel_;
     std::vector<std::vector<Stmt*>> deferStack_;
+    std::vector<std::vector<std::string>> rcVars_;
     std::unordered_map<std::string, VarSymbol> currentVars_;
     int frameSize_ = 0;
     std::vector<std::string> errors_;

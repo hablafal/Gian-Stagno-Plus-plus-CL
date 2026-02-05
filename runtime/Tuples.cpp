@@ -10,8 +10,16 @@ struct GSPPTuple {
 
 extern "C" {
 
+void* gspp_alloc(size_t size);
+void* gspp_alloc_with_dtor(size_t size, void (*dtor)(void*));
+
+void gspp_tuple_dtor(void* ptr) {
+    GSPPTuple* t = (GSPPTuple*)ptr;
+    if (t->data) free(t->data);
+}
+
 GSPPTuple* gspp_tuple_new(long long len, bool is_mutable) {
-    GSPPTuple* t = (GSPPTuple*)malloc(sizeof(GSPPTuple));
+    GSPPTuple* t = (GSPPTuple*)gspp_alloc_with_dtor(sizeof(GSPPTuple), gspp_tuple_dtor);
     t->data = (uint64_t*)malloc(len * sizeof(uint64_t));
     t->len = len;
     t->is_mutable = is_mutable;

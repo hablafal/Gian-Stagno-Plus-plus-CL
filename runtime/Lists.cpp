@@ -10,8 +10,16 @@ struct GSPPList {
 
 extern "C" {
 
+void* gspp_alloc(size_t size);
+void* gspp_alloc_with_dtor(size_t size, void (*dtor)(void*));
+
+void gspp_list_dtor(void* ptr) {
+    GSPPList* list = (GSPPList*)ptr;
+    if (list->data) free(list->data);
+}
+
 GSPPList* gspp_list_new(long long initial_cap) {
-    GSPPList* list = (GSPPList*)malloc(sizeof(GSPPList));
+    GSPPList* list = (GSPPList*)gspp_alloc_with_dtor(sizeof(GSPPList), gspp_list_dtor);
     if (initial_cap < 10) initial_cap = 10;
     list->data = (uint64_t*)malloc(initial_cap * sizeof(uint64_t));
     list->len = 0;

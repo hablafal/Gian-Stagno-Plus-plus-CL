@@ -157,6 +157,8 @@ std::unique_ptr<Stmt> Parser::parseStmt() {
     if (check(TokenKind::If) || check(TokenKind::Elif)) return parseIf();
     if (check(TokenKind::While)) return parseWhile();
     if (check(TokenKind::For)) return parseFor();
+    if (check(TokenKind::Try)) return parseTry();
+    if (check(TokenKind::Raise)) return parseRaise();
     if (match(TokenKind::Join)) {
         auto stmt = std::make_unique<Stmt>();
         stmt->kind = Stmt::Kind::Join;
@@ -238,6 +240,55 @@ std::unique_ptr<Stmt> Parser::parseStmt() {
     stmt->kind = Stmt::Kind::ExprStmt;
     stmt->loc = l;
     stmt->expr = std::move(expr);
+    match(TokenKind::Semicolon);
+    return stmt;
+}
+
+std::unique_ptr<Stmt> Parser::parseTry() {
+    auto stmt = std::make_unique<Stmt>();
+    stmt->kind = Stmt::Kind::Try;
+    stmt->loc = loc();
+    advance(); // try
+    match(TokenKind::Colon);
+    stmt->body = parseBlock();
+
+    while (check(TokenKind::Except)) {
+        auto h = std::make_unique<Stmt>();
+        h->kind = Stmt::Kind::Except;
+        h->loc = loc();
+        advance(); // except
+        if (check(TokenKind::Ident)) {
+            h->excType = current_.text;
+            advance();
+            if (match(TokenKind::As)) {
+                if (check(TokenKind::Ident)) {
+                    h->excVar = current_.text;
+                    advance();
+                } else {
+                    error("expected identifier after 'as'");
+                }
+            }
+        }
+        match(TokenKind::Colon);
+        h->body = parseBlock();
+        stmt->handlers.push_back(std::move(h));
+    }
+
+    if (match(TokenKind::Finally)) {
+        match(TokenKind::Colon);
+        stmt->finallyBlock = parseBlock();
+    }
+    return stmt;
+}
+
+std::unique_ptr<Stmt> Parser::parseRaise() {
+    auto stmt = std::make_unique<Stmt>();
+    stmt->kind = Stmt::Kind::Raise;
+    stmt->loc = loc();
+    advance(); // raise
+    if (!check(TokenKind::Semicolon) && !check(TokenKind::Newline)) {
+        stmt->expr = parseExpr();
+    }
     match(TokenKind::Semicolon);
     return stmt;
 }

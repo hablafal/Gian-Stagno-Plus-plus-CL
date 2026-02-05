@@ -34,7 +34,45 @@ int CodeGenerator::getFrameSize() {
         if (s < 8) s = 8;
         sz += s;
     }
-    return (sz + 15) & ~15;
+    return (sz + 31) & ~15; // Extra padding for safety
+}
+
+bool CodeGenerator::isRefCounted(const Type& t) {
+    return t.kind == Type::Kind::String ||
+           t.kind == Type::Kind::List ||
+           t.kind == Type::Kind::Dict ||
+           t.kind == Type::Kind::Set ||
+           t.kind == Type::Kind::Tuple ||
+           t.kind == Type::Kind::Chan ||
+           (t.kind == Type::Kind::Pointer && t.ptrTo && t.ptrTo->kind == Type::Kind::StructRef);
+}
+
+bool CodeGenerator::isRCProducer(Expr* expr) {
+    if (!expr) return false;
+    switch (expr->kind) {
+        case Expr::Kind::New:
+        case Expr::Kind::Call:
+        case Expr::Kind::ListLit:
+        case Expr::Kind::DictLit:
+        case Expr::Kind::SetLit:
+        case Expr::Kind::TupleLit:
+        case Expr::Kind::Comprehension:
+        case Expr::Kind::ChanInit:
+        case Expr::Kind::Receive:
+        case Expr::Kind::Slice:
+            return true;
+        case Expr::Kind::Binary:
+            return expr->exprType.kind == Type::Kind::String ||
+                   expr->exprType.kind == Type::Kind::List ||
+                   expr->exprType.kind == Type::Kind::Dict ||
+                   expr->exprType.kind == Type::Kind::Set;
+        case Expr::Kind::Cast:
+            return isRCProducer(expr->left.get());
+        case Expr::Kind::Ternary:
+            return isRCProducer(expr->left.get()) || isRCProducer(expr->right.get());
+        default:
+            return false;
+    }
 }
 
 StructDef* CodeGenerator::resolveStruct(const std::string& name, const std::string& ns) {
@@ -52,7 +90,16 @@ void CodeGenerator::emitProgram() {
     emitProgramBody();
     out_ = originalOut;
     *out_ << "\t.data\n.LC_fmt_d:\n\t.string \"%d\"\n.LC_fmt_d_nl:\n\t.string \"%d\\n\"\n.LC_fmt_f:\n\t.string \"%f\"\n.LC_fmt_f_nl:\n\t.string \"%f\\n\"\n.LC_fmt_s:\n\t.string \"%s\"\n.LC_fmt_s_nl:\n\t.string \"%s\\n\"\n";
-    for (auto& p : stringPool_) *out_ << p.second << ":\n\t.string \"" << p.first << "\"\n";
+    for (auto& p : stringPool_) {
+        if (p.second.find(".LC_float_") != std::string::npos) {
+            *out_ << "\t.align 8\n";
+            *out_ << p.second << ":\n\t.double " << p.first << "\n";
+        } else {
+            *out_ << "\t.align 16\n";
+            *out_ << p.second << "_header:\n\t.quad -1\n\t.quad 0\n";
+            *out_ << p.second << ":\n\t.string \"" << p.first << "\"\n";
+        }
+    }
     *out_ << "\t.text\n" << textOut.str();
 }
 
@@ -70,6 +117,9 @@ void CodeGenerator::emitProgramBody() {
     *out_ << "\t.extern\tgspp_set_len\n";
     *out_ << "\t.extern\tgspp_spawn\n\t.extern\tgspp_join\n\t.extern\tgspp_mutex_create\n\t.extern\tgspp_mutex_lock\n\t.extern\tgspp_mutex_unlock\n";
     *out_ << "\t.extern\tgspp_chan_new\n\t.extern\tgspp_chan_send\n\t.extern\tgspp_chan_recv\n\t.extern\tgspp_chan_destroy\n";
+    *out_ << "\t.extern\tgspp_alloc\n\t.extern\tgspp_retain\n\t.extern\tgspp_release\n";
+    *out_ << "\t.extern\tgspp_push_exception_handler\n\t.extern\tgspp_pop_exception_handler\n\t.extern\tgspp_raise\n\t.extern\tgspp_get_current_exception\n";
+    *out_ << "\t.extern\t_setjmp\n";
     for (const auto& pair : semantic_->functions()) emitFunc(pair.second);
     for (const auto& modPair : semantic_->moduleFunctions()) for (const auto& pair : modPair.second) emitFunc(pair.second);
     for (const auto& pair : semantic_->structs()) for (const auto& mPair : pair.second.methods) emitFunc(mPair.second);
@@ -79,6 +129,18 @@ bool CodeGenerator::generate() { emitProgram(); return errors_.empty(); }
 
 void CodeGenerator::error(const std::string& msg, SourceLoc loc) {
     errors_.push_back(SourceManager::instance().formatError(loc, msg));
+}
+
+void CodeGenerator::emitRCRelease(const std::string& varName) {
+    std::string loc = getVarLocation(varName);
+    if (loc.empty()) return;
+    *out_ << "\tmovq\t" << loc << ", %rdi\n";
+    emitCall("gspp_release", 1);
+}
+
+void CodeGenerator::emitRCRetain(const std::string& reg) {
+    *out_ << "\tmovq\t%" << reg << ", %rdi\n";
+    emitCall("gspp_retain", 1);
 }
 
 void CodeGenerator::emitCall(const std::string& label, int numArgs) {
@@ -94,12 +156,11 @@ void CodeGenerator::emitCall(const std::string& label, int numArgs) {
 
         *out_ << "\ttestq\t$15, %rsp\n";
         *out_ << "\tjnz\t" << alignedLabel << "\n";
-        // Stack is already 16-byte aligned (before call)
-        // Wait, if RSP is 16-byte aligned, call will push 8 bytes, making it NOT aligned.
-        // Actually, the ABI says RSP must be 16-byte aligned BEFORE the call instruction.
+        // Stack is 16-byte aligned (rsp % 16 == 0). Call will push 8, making it 8-aligned at entry. Correct.
         *out_ << "\tcall\t" << label << "\n";
         *out_ << "\tjmp\t" << doneLabel << "\n";
         *out_ << alignedLabel << ":\n";
+        // Stack is 8-byte aligned (rsp % 16 == 8). Subtract 8 to make it 16-aligned before call.
         *out_ << "\tsubq\t$8, %rsp\n";
         *out_ << "\tcall\t" << label << "\n";
         *out_ << "\taddq\t$8, %rsp\n";

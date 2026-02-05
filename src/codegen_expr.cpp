@@ -38,7 +38,10 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             *out_ << "\tmovq\t$" << n << ", %" << regs[0] << "\n";
             emitCall("gspp_list_new", 1);
             for (int i = 0; i < n; i++) {
-                *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i].get()); *out_ << "\tmovq\t%rax, %rsi\n\tpopq\t%rdi\n\tpushq\t%rdi\n\tcall\tgspp_list_append\n\tpopq\t%rax\n";
+                *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i].get());
+                *out_ << "\tmovq\t%rax, %rsi\n\tpopq\t%rdi\n\tpushq\t%rdi\n";
+                emitCall("gspp_list_append", 2);
+                *out_ << "\tpopq\t%rax\n";
             }
             if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
             break;
@@ -48,9 +51,7 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
             const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
             const char** regs = isLinux_ ? regs_linux : regs_win;
-            if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
-            *out_ << "\tcall\tgspp_dict_new\n";
-            if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+            emitCall("gspp_dict_new", 0);
             for (int i = 0; i < n; i++) {
                 *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->args[i*2].get()); *out_ << "\tpushq\t%rax\n";
                 emitExprToRax(expr->args[i*2+1].get());
@@ -95,7 +96,9 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
         }
         case Expr::Kind::Comprehension: {
             std::string loopStart = nextLabel(), loopEnd = nextLabel(), skipLabel = nextLabel();
-            *out_ << "\tmovq\t$0, %rdi\n\tcall\tgspp_list_new\n\tpushq\t%rax\n";
+            *out_ << "\tmovq\t$0, %rdi\n";
+            emitCall("gspp_list_new", 1);
+            *out_ << "\tpushq\t%rax\n";
             emitExprToRax(expr->right.get()); *out_ << "\tpushq\t%rax\n\tmovq\t$0, %rbx\n";
             *out_ << loopStart << ":\n\tmovq\t(%rsp), %rdx\n\tmovq\t8(%rdx), %rcx\n\tcmpq\t%rcx, %rbx\n\tjge\t" << loopEnd << "\n";
             *out_ << "\tmovq\t(%rdx), %rdx\n\tmovq\t(%rdx,%rbx,8), %rax\n";
@@ -103,7 +106,9 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n";
             *out_ << "\tpushq\t%rbx\n";
             if (expr->cond) { emitExprToRax(expr->cond.get()); *out_ << "\ttestq\t%rax, %rax\n\tje\t" << skipLabel << "\n"; }
-            emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %rsi\n\tmovq\t16(%rsp), %rdi\n\tcall\tgspp_list_append\n";
+            emitExprToRax(expr->left.get());
+            *out_ << "\tmovq\t%rax, %rsi\n\tmovq\t16(%rsp), %rdi\n";
+            emitCall("gspp_list_append", 2);
             *out_ << skipLabel << ":\n\tpopq\t%rbx\n\tincq\t%rbx\n\tjmp\t" << loopStart << "\n" << loopEnd << ":\n\taddq\t$8, %rsp\n\tpopq\t%rax\n";
             if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
             break;
@@ -122,15 +127,13 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             if (expr->left->exprType.kind == Type::Kind::Set || expr->left->exprType.kind == Type::Kind::Dict) {
                 emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
                 emitExprToRax(expr->right.get()); *out_ << "\tmovq\t%rax, %" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
-                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
                 if (expr->op == "|") {
-                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_union\n";
-                    else *out_ << "\tcall\tgspp_dict_union\n";
+                    if (expr->left->exprType.kind == Type::Kind::Set) emitCall("gspp_set_union", 2);
+                    else emitCall("gspp_dict_union", 2);
                 } else if (expr->op == "&") {
-                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_intersection\n";
-                    else *out_ << "\tcall\tgspp_dict_intersection\n";
+                    if (expr->left->exprType.kind == Type::Kind::Set) emitCall("gspp_set_intersection", 2);
+                    else emitCall("gspp_dict_intersection", 2);
                 }
-                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
                 if (dest != "rax") *out_ << "\tmovq\t%rax, %" << dest << "\n";
                 return;
             }
@@ -157,7 +160,10 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             }
             emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n"; emitExprToRax(expr->right.get()); *out_ << "\tmovq\t%rax, %rcx\n\tpopq\t%rax\n";
             if (expr->op == "+") {
-                if (expr->left->exprType.kind == Type::Kind::String) { *out_ << "\tmovq\t%rax, %rdi\n\tmovq\t%rcx, %rsi\n\tcall\t_gspp_strcat\n"; }
+                if (expr->left->exprType.kind == Type::Kind::String) {
+                    *out_ << "\tmovq\t%rax, %rdi\n\tmovq\t%rcx, %rsi\n";
+                    emitCall("_gspp_strcat", 2);
+                }
                 else *out_ << "\taddq\t%rcx, %rax\n";
             } else if (expr->op == "-") *out_ << "\tsubq\t%rcx, %rax\n";
             else if (expr->op == "*" ) *out_ << "\timulq\t%rcx, %rax\n";
@@ -189,8 +195,8 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
             emitExprToRax(expr->left.get()); *out_ << "\tpushq\t%rax\n";
             emitExprToRax(expr->args[0].get()); *out_ << "\tpushq\t%rax\n";
             emitExprToRax(expr->args[1].get()); *out_ << "\tmovq\t%rax, %rdx\n\tpopq\t%rsi\n\tpopq\t%rdi\n";
-            if (expr->left->exprType.kind == Type::Kind::String) *out_ << "\tcall\tgspp_str_slice\n";
-            else *out_ << "\tcall\tgspp_list_slice\n";
+            if (expr->left->exprType.kind == Type::Kind::String) emitCall("gspp_str_slice", 3);
+            else emitCall("gspp_list_slice", 3);
             if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
             break;
         }
@@ -236,19 +242,15 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
 
             if (expr->left && expr->left->exprType.kind == Type::Kind::String && expr->ident == "len") {
                 emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
-                if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
-                *out_ << "\tcall\tstrlen\n";
-                if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                emitCall("strlen", 1);
                 if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
                 return;
             }
             if (expr->left && (expr->left->exprType.kind == Type::Kind::Set || expr->left->exprType.kind == Type::Kind::Dict)) {
                 if (expr->ident == "len") {
                     emitExprToRax(expr->left.get()); *out_ << "\tmovq\t%rax, %" << regs[0] << "\n";
-                    if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
-                    if (expr->left->exprType.kind == Type::Kind::Set) *out_ << "\tcall\tgspp_set_len\n";
-                    else *out_ << "\tcall\tgspp_dict_len\n";
-                    if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                    if (expr->left->exprType.kind == Type::Kind::Set) emitCall("gspp_set_len", 1);
+                    else emitCall("gspp_dict_len", 1);
                     if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
                     return;
                 }
@@ -258,9 +260,7 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
                         emitExprToRax(expr->args[0].get()); *out_ << "\tpushq\t%rax\n";
                         if (expr->args.size() > 1) emitExprToRax(expr->args[1].get()); else *out_ << "\tmovq\t$0, %rax\n";
                         *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n\tpushq\t%" << regs[0] << "\n";
-                        if (!isLinux_) *out_ << "\tsubq\t$32, %rsp\n";
-                        *out_ << "\tcall\tgspp_dict_get_default\n";
-                        if (!isLinux_) *out_ << "\taddq\t$32, %rsp\n";
+                        emitCall("gspp_dict_get_default", 3);
                         *out_ << "\tpopq\t%rcx\n";
                         if (dest != rax) *out_ << "\tmovq\t%rax, %" << dest << "\n";
                         return;
@@ -347,7 +347,7 @@ void CodeGenerator::emitExpr(Expr* expr, const std::string& destReg, bool wantFl
         case Expr::Kind::New: {
             int sz = getTypeSize(*expr->targetType);
             *out_ << "\tmovq\t$" << sz << ", %rdi\n";
-            emitCall("malloc", 1);
+            emitCall("gspp_alloc", 1);
             *out_ << "\tpushq\t%rax\n"; // Save pointer to object
 
             // Call init if it exists

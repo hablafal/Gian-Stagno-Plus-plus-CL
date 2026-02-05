@@ -38,6 +38,8 @@ private:
     std::unique_ptr<Stmt> parseWhile();
     std::unique_ptr<Stmt> parseFor();
     std::unique_ptr<Stmt> parseReturn();
+    std::unique_ptr<Stmt> parseTry();
+    std::unique_ptr<Stmt> parseRaise();
 
     StructDecl parseStructDecl();
     FuncDecl parseFuncDecl(bool isExtern = false);

@@ -87,7 +87,7 @@ struct Stmt {
     enum class Kind {
         Block, VarDecl, Assign, If, While, For, Return, ExprStmt,
         Unsafe, Asm, Repeat, RangeFor, ForEach, Switch, Case, Defer,
-        Lock, Join, Send
+        Lock, Join, Send, Try, Except, Raise
     };
     Kind kind = Kind::Block;
     SourceLoc loc;
@@ -110,6 +110,12 @@ struct Stmt {
     std::unique_ptr<Expr> returnExpr;
     std::unique_ptr<Expr> expr;
     std::string asmCode; // for Asm
+
+    // for Try/Except
+    std::vector<std::unique_ptr<Stmt>> handlers; // List of ExceptStmt
+    std::unique_ptr<Stmt> finallyBlock;
+    std::string excType; // for ExceptStmt
+    std::string excVar;  // for ExceptStmt (e.g. except Exception as e)
 };
 
 struct StructMember {

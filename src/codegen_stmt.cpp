@@ -1,28 +1,78 @@
 #include "codegen.h"
+#include <iostream>
 
 namespace gspp {
 
 void CodeGenerator::emitStmt(Stmt* stmt) {
     if (!stmt) return;
     switch (stmt->kind) {
-        case Stmt::Kind::Block: { deferStack_.emplace_back(); for (auto& s : stmt->blockStmts) emitStmt(s.get()); auto& defers = deferStack_.back(); for (auto it = defers.rbegin(); it != defers.rend(); ++it) emitStmt(*it); deferStack_.pop_back(); break; }
-        case Stmt::Kind::VarDecl:
+        case Stmt::Kind::Block: {
+            deferStack_.emplace_back();
+            rcVars_.emplace_back();
+            for (auto& s : stmt->blockStmts) emitStmt(s.get());
+
+            // Release RC variables
+            for (auto it = rcVars_.back().rbegin(); it != rcVars_.back().rend(); ++it) {
+                emitRCRelease(*it);
+            }
+
+            auto& defers = deferStack_.back();
+            for (auto it = defers.rbegin(); it != defers.rend(); ++it) emitStmt(*it);
+            deferStack_.pop_back();
+            rcVars_.pop_back();
+            break;
+        }
+        case Stmt::Kind::VarDecl: {
+            std::string loc = getVarLocation(stmt->varName);
+            if (loc.empty()) break;
+
+            // Initialize to 0
+            *out_ << "\tmovq\t$0, " << loc << "\n";
+
+            if (isRefCounted(stmt->varType)) {
+                rcVars_.back().push_back(stmt->varName);
+            }
+
             if (stmt->varType.kind == Type::Kind::Mutex && !stmt->varInit) {
                 emitCall("gspp_mutex_create", 0);
-                std::string loc = getVarLocation(stmt->varName);
-                if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n";
+                *out_ << "\tmovq\t%rax, " << loc << "\n";
             } else if (stmt->varInit) {
                 emitExprToRax(stmt->varInit.get());
-                std::string loc = getVarLocation(stmt->varName);
-                if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n";
+                if (isRefCounted(stmt->varType)) {
+                    // If value is not newly produced, we must retain it to own it
+                    if (!isRCProducer(stmt->varInit.get())) {
+                        *out_ << "\tpushq\t%rax\n";
+                        emitRCRetain("rax");
+                        *out_ << "\tpopq\t%rax\n";
+                    }
+                }
+                *out_ << "\tmovq\t%rax, " << loc << "\n";
             }
             break;
+        }
         case Stmt::Kind::Assign: {
             const char* regs_linux[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
             const char* regs_win[] = {"rcx", "rdx", "r8", "r9"};
             const char** regs = isLinux_ ? regs_linux : regs_win;
 
-            if (stmt->assignTarget->kind == Expr::Kind::Var) { emitExprToRax(stmt->assignValue.get()); std::string loc = getVarLocation(stmt->assignTarget->ident); if (!loc.empty()) *out_ << "\tmovq\t%rax, " << loc << "\n"; }
+            if (stmt->assignTarget->kind == Expr::Kind::Var) {
+                emitExprToRax(stmt->assignValue.get());
+                std::string loc = getVarLocation(stmt->assignTarget->ident);
+                if (!loc.empty()) {
+                    if (isRefCounted(stmt->assignTarget->exprType)) {
+                        *out_ << "\tpushq\t%rax\n";
+                        // If value is not newly produced, we must retain it to own it
+                        if (!isRCProducer(stmt->assignValue.get())) {
+                            emitRCRetain("rax");
+                        }
+                        // Release old value
+                        *out_ << "\tmovq\t" << loc << ", %rdi\n";
+                        emitCall("gspp_release", 1);
+                        *out_ << "\tpopq\t%rax\n";
+                    }
+                    *out_ << "\tmovq\t%rax, " << loc << "\n";
+                }
+            }
             else if (stmt->assignTarget->kind == Expr::Kind::Member) { emitExprToRax(stmt->assignTarget->left.get()); *out_ << "\tpushq\t%rax\n"; emitExprToRax(stmt->assignValue.get()); *out_ << "\tmovq\t%rax, %rcx\n\tpopq\t%rax\n"; Type baseType = stmt->assignTarget->left->exprType; if (baseType.kind == Type::Kind::Pointer) baseType = *baseType.ptrTo; StructDef* sd = resolveStruct(baseType.structName, baseType.ns); if (sd) { auto it = sd->memberIndex.find(stmt->assignTarget->member); if (it != sd->memberIndex.end()) *out_ << "\tmovq\t%rcx, " << (it->second * 8) << "(%rax)\n"; } }
             else if (stmt->assignTarget->kind == Expr::Kind::Index) {
                 Type baseTy = stmt->assignTarget->left->exprType;
@@ -80,7 +130,40 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
             break;
         }
         case Stmt::Kind::Defer: if (!deferStack_.empty()) deferStack_.back().push_back(stmt->body.get()); break;
-        case Stmt::Kind::Return: if (stmt->returnExpr) { if (stmt->returnExpr->exprType.kind == Type::Kind::Float) emitExprToXmm0(stmt->returnExpr.get()); else emitExprToRax(stmt->returnExpr.get()); } else *out_ << "\tmovq\t$0, %rax\n"; for (auto sit = deferStack_.rbegin(); sit != deferStack_.rend(); ++sit) for (auto it = sit->rbegin(); it != sit->rend(); ++it) emitStmt(*it); *out_ << "\tjmp\t" << currentEndLabel_ << "\n"; break;
+        case Stmt::Kind::Return:
+            if (stmt->returnExpr) {
+                if (stmt->returnExpr->exprType.kind == Type::Kind::Float) {
+                    emitExprToXmm0(stmt->returnExpr.get());
+                } else {
+                    emitExprToRax(stmt->returnExpr.get());
+                    if (isRefCounted(stmt->returnExpr->exprType)) {
+                        // If return value is not newly produced, we must retain it so it survives local releases
+                        if (!isRCProducer(stmt->returnExpr.get())) {
+                            *out_ << "\tpushq\t%rax\n";
+                            emitRCRetain("rax");
+                            *out_ << "\tpopq\t%rax\n";
+                        }
+                    }
+                }
+            } else {
+                *out_ << "\tmovq\t$0, %rax\n";
+            }
+            // ARC releases for all scopes
+            if (stmt->returnExpr && stmt->returnExpr->exprType.kind != Type::Kind::Float) *out_ << "\tpushq\t%rax\n";
+            for (auto sit = rcVars_.rbegin(); sit != rcVars_.rend(); ++sit) {
+                for (auto it = sit->rbegin(); it != sit->rend(); ++it) {
+                    emitRCRelease(*it);
+                }
+            }
+            if (stmt->returnExpr && stmt->returnExpr->exprType.kind != Type::Kind::Float) *out_ << "\tpopq\t%rax\n";
+            // Defer stmts
+            for (auto sit = deferStack_.rbegin(); sit != deferStack_.rend(); ++sit) {
+                for (auto it = sit->rbegin(); it != sit->rend(); ++it) {
+                    emitStmt(*it);
+                }
+            }
+            *out_ << "\tjmp\t" << currentEndLabel_ << "\n";
+            break;
         case Stmt::Kind::For: emitStmt(stmt->initStmt.get()); { std::string condLabel = nextLabel(), endLabel = nextLabel(); *out_ << condLabel << ":\n"; emitExprToRax(stmt->condition.get()); *out_ << "\ttestq\t%rax, %rax\n\tje\t" << endLabel << "\n"; emitStmt(stmt->body.get()); emitStmt(stmt->stepStmt.get()); *out_ << "\tjmp\t" << condLabel << "\n" << endLabel << ":\n"; } break;
         case Stmt::Kind::ExprStmt: emitExprToRax(stmt->expr.get()); break;
         case Stmt::Kind::Unsafe: emitStmt(stmt->body.get()); break;
@@ -95,6 +178,56 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
             *out_ << "\tmovq\t%rax, %" << regs[1] << "\n";
             *out_ << "\tpopq\t%" << regs[0] << "\n";
             emitCall("gspp_chan_send", 2);
+            break;
+        }
+        case Stmt::Kind::Try: {
+            std::string labelExc = nextLabel();
+            std::string labelFinally = nextLabel();
+            std::string labelEnd = nextLabel();
+
+            *out_ << "\tsubq\t$256, %rsp\n";
+            *out_ << "\tmovq\t%rsp, %rdi\n";
+            *out_ << "\tcall\t_setjmp\n";
+            *out_ << "\ttestq\t%rax, %rax\n";
+            *out_ << "\tjnz\t" << labelExc << "\n";
+
+            *out_ << "\tmovq\t%rsp, %rdi\n";
+            emitCall("gspp_push_exception_handler", 1);
+            emitStmt(stmt->body.get());
+            emitCall("gspp_pop_exception_handler", 0);
+            *out_ << "\taddq\t$256, %rsp\n";
+            *out_ << "\tjmp\t" << labelFinally << "\n";
+
+            *out_ << labelExc << ":\n";
+            *out_ << "\taddq\t$256, %rsp\n";
+            for (auto& h : stmt->handlers) {
+                emitStmt(h.get());
+                *out_ << "\tjmp\t" << labelFinally << "\n";
+            }
+            *out_ << labelFinally << ":\n";
+            if (stmt->finallyBlock) emitStmt(stmt->finallyBlock.get());
+            *out_ << labelEnd << ":\n";
+            break;
+        }
+        case Stmt::Kind::Except: {
+            if (!stmt->excVar.empty()) {
+                std::string loc = getVarLocation(stmt->excVar);
+                if (!loc.empty()) {
+                    emitCall("gspp_get_current_exception", 0);
+                    *out_ << "\tmovq\t%rax, " << loc << "\n";
+                }
+            }
+            emitStmt(stmt->body.get());
+            break;
+        }
+        case Stmt::Kind::Raise: {
+            if (stmt->expr) {
+                emitExprToRax(stmt->expr.get());
+                *out_ << "\tmovq\t%rax, %rdi\n";
+            } else {
+                *out_ << "\tmovq\t$0, %rdi\n";
+            }
+            emitCall("gspp_raise", 1);
             break;
         }
     }
