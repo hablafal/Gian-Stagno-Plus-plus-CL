@@ -177,17 +177,26 @@ std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
                 e->loc = l;
                 base = std::move(e);
             }
-        } else if ((check(TokenKind::Lt) && lexer_.peekForGenericEnd()) || check(TokenKind::LParen)) {
+        } else if ((check(TokenKind::Lt) && lexer_.peekForGenericEnd()) || check(TokenKind::LBracket) || check(TokenKind::LParen)) {
             std::vector<Type> typeArgs;
-            if (match(TokenKind::Lt)) {
+            bool isBracket = false;
+            if (match(TokenKind::Lt) || (isBracket = match(TokenKind::LBracket))) {
+                TokenKind closing = isBracket ? TokenKind::RBracket : TokenKind::Gt;
                 do {
                     typeArgs.push_back(*parseType());
                 } while (match(TokenKind::Comma));
-                expect(TokenKind::Gt, "expected '>' after type arguments");
+                expect(closing, isBracket ? "expected ']'" : "expected '>'");
             }
             if (!match(TokenKind::LParen)) {
-                error("expected '(' after type arguments");
-                break;
+                if (typeArgs.empty()) {
+                    // It was just a bracket access or something else, but we already matched it?
+                    // Actually if we are here it's likely a generic function call or struct instantiation.
+                    // If no LParen, it might be just the generic type itself being referred to,
+                    // but usually that's handled in parsePrimary for Var.
+                } else {
+                     error("expected '(' after type arguments");
+                     break;
+                }
             }
             std::vector<std::unique_ptr<Expr>> args;
             if (!check(TokenKind::RParen)) {
@@ -201,26 +210,20 @@ std::unique_ptr<Expr> Parser::parsePostfix(std::unique_ptr<Expr> base) {
                 std::string func = base->member;
                 auto c = Expr::makeCall(func, std::move(args), l);
                 c->left = std::move(base->left);
-                c->exprType.typeArgs = typeArgs;
+                c->typeArgs = typeArgs;
                 base = std::move(c);
             } else if (base->kind == Expr::Kind::Var) {
                 std::string func = base->ident;
                 auto c = Expr::makeCall(func, std::move(args), l);
-                c->exprType.typeArgs = typeArgs;
-                base = std::move(c);
-            } else if (base->kind == Expr::Kind::Member) {
-                 // method call on non-var base
-                std::string func = base->member;
-                auto c = Expr::makeCall(func, std::move(args), l);
-                c->left = std::move(base->left);
-                c->exprType.typeArgs = typeArgs;
+                c->typeArgs = typeArgs;
                 base = std::move(c);
             } else {
                 auto c = std::make_unique<Expr>();
                 c->kind = Expr::Kind::Call;
                 c->left = std::move(base);
-                c->exprType.typeArgs = typeArgs;
+                c->typeArgs = typeArgs;
                 c->loc = l;
+                c->args = std::move(args);
                 base = std::move(c);
             }
         } else {

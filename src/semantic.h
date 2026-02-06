@@ -4,6 +4,7 @@
 #include "ast.h"
 #include <string>
 #include <vector>
+#include <set>
 #include <unordered_map>
 #include <memory>
 
@@ -88,6 +89,7 @@ private:
     std::unordered_map<std::string, StructDef> structs_;
     std::unordered_map<std::string, FuncSymbol> functions_;
     std::vector<std::unordered_map<std::string, VarSymbol>> scopes_;
+    std::set<std::string> instantiating_;
     std::vector<std::string> errors_;
     FuncDecl* currentFunc_ = nullptr;
     FuncSymbol* currentFuncSymbol_ = nullptr;

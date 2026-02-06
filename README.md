@@ -8,6 +8,8 @@ A **modern systems-level language** that combines **Python’s simplicity and re
 ## Latest Features
 
 - **Modular Architecture**: Compiler is split into specialized components for Parser, Semantic Analyzer, and Code Generator.
+- **Interactive REPL**: Test GS++ code instantly in the terminal by running `gsc --repl`.
+- **Advanced Generics**: Full support for user-defined generic structs and functions using C++-style monomorphization (e.g., `struct Box[T]: ...`).
 - **Pythonic OOP**: Full support for `struct` and `class` with inheritance (`class Derived(Base):`), constructors (`def init(self, ...):`), and the `super` keyword.
 - **Advanced Concurrency**:
     - `spawn`: Run functions in native threads.
@@ -42,6 +44,7 @@ gsc main.gs -o app      # compile and link
 gsc main.gs -S          # emit assembly only
 gsc main.gs -g          # debug mode
 gsc main.gs -O          # release mode (optimize)
+gsc --repl              # start interactive REPL
 ```
 
 ## Quick example: Concurrency & OOP

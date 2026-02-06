@@ -32,7 +32,11 @@ void SemanticAnalyzer::addModule(const std::string& name, Program* prog) {
 void SemanticAnalyzer::instantiateStruct(const std::string& name, const std::string& ns, const std::vector<Type>& args) {
     if (args.empty()) return;
     std::string mangled = mangleGenericName(name, args);
+    std::string fullKey = ns + "::" + mangled;
+    if (instantiating_.count(fullKey)) return;
     if (getStruct(mangled, ns)) return;
+
+    instantiating_.insert(fullKey);
     const StructDecl* tmpl = nullptr;
     if (ns.empty()) {
         if (structTemplates_.count(name)) tmpl = structTemplates_[name];
@@ -52,10 +56,29 @@ void SemanticAnalyzer::instantiateStruct(const std::string& name, const std::str
         sm.type = substitute(m.type, subs);
         spec->members.push_back(std::move(sm));
     }
+    for (const auto& m : tmpl->methods) {
+        FuncDecl fm;
+        fm.name = m.name;
+        fm.loc = m.loc;
+        fm.returnType = substitute(m.returnType, subs);
+        for (const auto& p : m.params) {
+            FuncParam fp = p;
+            fp.type = substitute(p.type, subs);
+            fm.params.push_back(std::move(fp));
+        }
+        fm.body = substituteStmt(m.body.get(), subs);
+        spec->methods.push_back(std::move(fm));
+    }
     auto oldNs = currentNamespace_;
     currentNamespace_ = ns;
     analyzeStruct(*spec);
+    StructDecl* specPtr = spec.get();
     instantiatedStructDecls_.push_back(std::move(spec));
+
+    for (const auto& m : specPtr->methods) {
+        analyzeMethod(specPtr->name, m);
+    }
+    instantiating_.erase(fullKey);
     if (!ns.empty()) {
         moduleStructs_[ns][mangled] = std::move(structs_[mangled]);
         structs_.erase(mangled);
@@ -66,7 +89,11 @@ void SemanticAnalyzer::instantiateStruct(const std::string& name, const std::str
 void SemanticAnalyzer::instantiateFunc(const std::string& name, const std::string& ns, const std::vector<Type>& args) {
     if (args.empty()) return;
     std::string mangled = mangleGenericName(name, args);
+    std::string fullKey = ns + "::" + mangled;
+    if (instantiating_.count(fullKey)) return;
     if (getFunc(mangled, ns)) return;
+
+    instantiating_.insert(fullKey);
     const FuncDecl* tmpl = nullptr;
     if (ns.empty()) {
         if (funcTemplates_.count(name)) tmpl = funcTemplates_[name];
@@ -96,6 +123,7 @@ void SemanticAnalyzer::instantiateFunc(const std::string& name, const std::strin
         moduleFunctions_[ns][mangled] = std::move(functions_[mangled]);
         functions_.erase(mangled);
     }
+    instantiating_.erase(fullKey);
     currentNamespace_ = oldNs;
 }
 

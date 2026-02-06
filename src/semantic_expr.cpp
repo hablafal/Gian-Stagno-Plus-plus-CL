@@ -118,6 +118,10 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
                 expr->exprType.kind = Type::Kind::Int;
                 return expr->exprType;
             }
+            if (!expr->typeArgs.empty()) {
+                instantiateFunc(expr->ident, expr->ns, expr->typeArgs);
+                expr->ident = mangleGenericName(expr->ident, expr->typeArgs);
+            }
             FuncSymbol* fs = getFunc(expr->ident, expr->ns);
             if (!fs) { error("undefined function '" + expr->ident + "'", expr->loc); return Type{Type::Kind::Int}; }
             for (auto& a : expr->args) analyzeExpr(a.get());
@@ -221,6 +225,7 @@ Type SemanticAnalyzer::analyzeExpr(Expr* expr) {
         }
         case Expr::Kind::New: {
             Type t = resolveType(*expr->targetType);
+            *expr->targetType = t;
             expr->exprType.kind = Type::Kind::Pointer;
             expr->exprType.ptrTo = std::make_unique<Type>(t);
             for (auto& a : expr->args) analyzeExpr(a.get());
@@ -292,6 +297,7 @@ std::unique_ptr<Expr> SemanticAnalyzer::substituteExpr(const Expr* e, const std:
     res->member = e->member;
     res->op = e->op;
     res->exprType = substitute(e->exprType, subs);
+    for (const auto& ta : e->typeArgs) res->typeArgs.push_back(substitute(ta, subs));
     if (e->targetType) res->targetType = std::make_unique<Type>(substitute(*e->targetType, subs));
     if (e->left) res->left = substituteExpr(e->left.get(), subs);
     if (e->right) res->right = substituteExpr(e->right.get(), subs);

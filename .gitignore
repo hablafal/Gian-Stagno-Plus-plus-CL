@@ -15,3 +15,7 @@ build/
 .idea/
 .vs/
 *.user
+repl_tmp.*
+repl_error.log
+libgspprun.a
+gdb_script

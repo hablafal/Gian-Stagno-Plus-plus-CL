@@ -73,7 +73,36 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
                     *out_ << "\tmovq\t%rax, " << loc << "\n";
                 }
             }
-            else if (stmt->assignTarget->kind == Expr::Kind::Member) { emitExprToRax(stmt->assignTarget->left.get()); *out_ << "\tpushq\t%rax\n"; emitExprToRax(stmt->assignValue.get()); *out_ << "\tmovq\t%rax, %rcx\n\tpopq\t%rax\n"; Type baseType = stmt->assignTarget->left->exprType; if (baseType.kind == Type::Kind::Pointer) baseType = *baseType.ptrTo; StructDef* sd = resolveStruct(baseType.structName, baseType.ns); if (sd) { auto it = sd->memberIndex.find(stmt->assignTarget->member); if (it != sd->memberIndex.end()) *out_ << "\tmovq\t%rcx, " << (it->second * 8) << "(%rax)\n"; } }
+            else if (stmt->assignTarget->kind == Expr::Kind::Member) {
+                emitExprToRax(stmt->assignTarget->left.get());
+                *out_ << "\tpushq\t%rax\n"; // Save object pointer
+                emitExprToRax(stmt->assignValue.get());
+                *out_ << "\tmovq\t%rax, %rcx\n";
+                *out_ << "\tpopq\t%rax\n"; // Restore object pointer
+
+                Type baseType = stmt->assignTarget->left->exprType;
+                if (baseType.kind == Type::Kind::Pointer) baseType = *baseType.ptrTo;
+                StructDef* sd = resolveStruct(baseType.structName, baseType.ns);
+                if (sd) {
+                    auto it = sd->memberIndex.find(stmt->assignTarget->member);
+                    if (it != sd->memberIndex.end()) {
+                        int offset = it->second * 8;
+                        if (isRefCounted(stmt->assignTarget->exprType)) {
+                            *out_ << "\tpushq\t%rax\n";
+                            *out_ << "\tpushq\t%rcx\n";
+                            if (!isRCProducer(stmt->assignValue.get())) {
+                                emitRCRetain("rcx");
+                            }
+                            *out_ << "\tmovq\t8(%rsp), %rax\n"; // Restore rax for offset access
+                            *out_ << "\tmovq\t" << offset << "(%rax), %rdi\n";
+                            emitCall("gspp_release", 1);
+                            *out_ << "\tpopq\t%rcx\n";
+                            *out_ << "\tpopq\t%rax\n";
+                        }
+                        *out_ << "\tmovq\t%rcx, " << offset << "(%rax)\n";
+                    }
+                }
+            }
             else if (stmt->assignTarget->kind == Expr::Kind::Index) {
                 Type baseTy = stmt->assignTarget->left->exprType;
                 if (baseTy.kind == Type::Kind::Tuple) {
@@ -87,6 +116,26 @@ void CodeGenerator::emitStmt(Stmt* stmt) {
                     emitExprToRax(stmt->assignTarget->right.get()); *out_ << "\tpushq\t%rax\n";
                     emitExprToRax(stmt->assignValue.get());
                     *out_ << "\tmovq\t%rax, %" << regs[2] << "\n\tpopq\t%" << regs[1] << "\n\tpopq\t%" << regs[0] << "\n";
+
+                    if (isRefCounted(stmt->assignTarget->exprType)) {
+                        *out_ << "\tpushq\t%" << regs[0] << "\n";
+                        *out_ << "\tpushq\t%" << regs[1] << "\n";
+                        *out_ << "\tpushq\t%" << regs[2] << "\n";
+                        if (!isRCProducer(stmt->assignValue.get())) {
+                            *out_ << "\tmovq\t%" << regs[2] << ", %rdi\n";
+                            emitCall("gspp_retain", 1);
+                        }
+                        // Release old
+                        *out_ << "\tmovq\t8(%rsp), %rax\n"; // Restore regs[1] (index)
+                        *out_ << "\tmovq\t16(%rsp), %rdx\n"; // Restore regs[0] (list)
+                        *out_ << "\tmovq\t(%rdx), %rdx\n"; // list->data
+                        *out_ << "\tmovq\t(%rdx,%rax,8), %rdi\n";
+                        emitCall("gspp_release", 1);
+                        *out_ << "\tpopq\t%" << regs[2] << "\n";
+                        *out_ << "\tpopq\t%" << regs[1] << "\n";
+                        *out_ << "\tpopq\t%" << regs[0] << "\n";
+                    }
+
                     *out_ << "\tmovq\t(%" << regs[0] << "), %rax\n";
                     *out_ << "\tmovq\t%" << regs[2] << ", (%rax,%" << regs[1] << ",8)\n";
                 }

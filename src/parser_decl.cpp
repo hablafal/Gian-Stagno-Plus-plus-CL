@@ -16,13 +16,15 @@ StructDecl Parser::parseStructDecl() {
         }
         expect(TokenKind::RParen, "expected ')' after base class");
     }
-    if (match(TokenKind::Lt)) {
+    bool isBracket = false;
+    if (match(TokenKind::Lt) || (isBracket = match(TokenKind::LBracket))) {
+        TokenKind closing = isBracket ? TokenKind::RBracket : TokenKind::Gt;
         do {
             if (!check(TokenKind::Ident)) { error("expected type parameter name"); }
             s.typeParams.push_back(current_.text);
             advance();
         } while (match(TokenKind::Comma));
-        expect(TokenKind::Gt, "expected '>' after type parameters");
+        expect(closing, isBracket ? "expected ']'" : "expected '>'");
     }
     match(TokenKind::Colon);
     while (check(TokenKind::Newline)) advance();
@@ -86,13 +88,15 @@ FuncDecl Parser::parseFuncDecl(bool isExtern) {
     if (!check(TokenKind::Ident)) { error("expected function name"); sync(); return f; }
     f.name = current_.text;
     advance();
-    if (match(TokenKind::Lt)) {
+    bool isBracket = false;
+    if (match(TokenKind::Lt) || (isBracket = match(TokenKind::LBracket))) {
+        TokenKind closing = isBracket ? TokenKind::RBracket : TokenKind::Gt;
         do {
             if (!check(TokenKind::Ident)) { error("expected type parameter name"); }
             f.typeParams.push_back(current_.text);
             advance();
         } while (match(TokenKind::Comma));
-        expect(TokenKind::Gt, "expected '>' after type parameters");
+        expect(closing, isBracket ? "expected ']'" : "expected '>'");
     }
     expect(TokenKind::LParen, "expected '('");
     if (!check(TokenKind::RParen)) {

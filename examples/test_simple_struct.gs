@@ -1,10 +1,7 @@
-struct S:
+struct A:
     x: int
 
-def f(s: ptr S):
-    s.x = 1
-
 fn main():
-    let s = new S()
-    f(s)
-    println(s.x)
+    let a = new A()
+    a.x = 42
+    println(a.x)

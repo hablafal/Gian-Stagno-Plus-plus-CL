@@ -22,7 +22,14 @@ std::unique_ptr<Type> Parser::parseType() {
     if (match(TokenKind::Float) || match(TokenKind::Decimal)) { ty->kind = Type::Kind::Float; return ty; }
     if (match(TokenKind::Bool)) { ty->kind = Type::Kind::Bool; return ty; }
     if (match(TokenKind::String) || match(TokenKind::Text)) { ty->kind = Type::Kind::String; return ty; }
-    if (match(TokenKind::Arr)) { ty->kind = Type::Kind::List; return ty; }
+    if (match(TokenKind::Arr)) {
+        ty->kind = Type::Kind::List;
+        if (match(TokenKind::LBracket)) {
+            ty->ptrTo = parseType();
+            expect(TokenKind::RBracket, "expected ']' after Arr type");
+        }
+        return ty;
+    }
     if (match(TokenKind::Char)) { ty->kind = Type::Kind::Char; return ty; }
     if (match(TokenKind::Tuple)) { ty->kind = Type::Kind::Tuple; return ty; }
     if (match(TokenKind::Mutex)) { ty->kind = Type::Kind::Mutex; return ty; }
@@ -49,11 +56,13 @@ std::unique_ptr<Type> Parser::parseType() {
             ty->kind = Type::Kind::StructRef;
             ty->structName = id;
         }
-        if (match(TokenKind::Lt)) {
+        bool isBracket = false;
+        if (match(TokenKind::Lt) || (isBracket = match(TokenKind::LBracket))) {
+            TokenKind closing = isBracket ? TokenKind::RBracket : TokenKind::Gt;
             do {
                 ty->typeArgs.push_back(*parseType());
             } while (match(TokenKind::Comma));
-            expect(TokenKind::Gt, "expected '>' after type arguments");
+            expect(closing, isBracket ? "expected ']'" : "expected '>'");
         }
         return ty;
     }

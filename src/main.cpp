@@ -26,18 +26,28 @@ static int runCommand(const std::string& cmd) {
     return system(cmd.c_str());
 }
 
+void runREPL(bool use64Bit, bool isLinux);
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "GS++ Compiler (gsc) — Gian Stagno Plus Plus\n";
-        std::cerr << "Usage: gsc <source.gs> [options]\n";
-        std::cerr << "  -o <exe>   Output executable (default: base name of source)\n";
-        std::cerr << "  -S         Emit assembly only (do not link)\n";
-        std::cerr << "  -g         Debug mode (no optimizations)\n";
-        std::cerr << "  -O         Release mode (optimize)\n";
-        std::cerr << "  -m64       Generate 64-bit code (default: 32-bit for compatibility)\n";
-        return 1;
+#ifdef _WIN32
+        bool isLinux = false;
+#else
+        bool isLinux = true;
+#endif
+        runREPL(true, isLinux);
+        return 0;
     }
     std::string sourcePath = argv[1];
+    if (sourcePath == "--repl") {
+#ifdef _WIN32
+        bool isLinux = false;
+#else
+        bool isLinux = true;
+#endif
+        runREPL(true, isLinux);
+        return 0;
+    }
     std::string outPath;
     bool emitAsmOnly = false;
     bool use64Bit = true;

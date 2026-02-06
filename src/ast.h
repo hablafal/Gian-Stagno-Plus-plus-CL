@@ -50,6 +50,7 @@ struct Expr {
     std::unique_ptr<Expr> right;
     std::string op;  // binary op or unary op
     std::vector<std::unique_ptr<Expr>> args;
+    std::vector<Type> typeArgs; // for generic function calls
     std::string member;
     std::unique_ptr<Type> targetType;  // for Cast
     std::unique_ptr<Expr> cond;      // for Ternary
